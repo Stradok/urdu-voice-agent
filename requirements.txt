@@ -1,0 +1,6 @@
+faster-whisper
+chromadb
+sentence-transformers
+groq
+python-dotenv
+azure-cognitiveservices-speech
