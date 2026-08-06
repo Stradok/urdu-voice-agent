@@ -7,6 +7,8 @@ DEFAULTS = {
     "llm_temperature": 0.5,
     "tts_rate_percent": 15,
     "vad_silence_ms": 700,
+    "mic_device": "auto",
+    "speaker_device": "auto",
 }
 
 

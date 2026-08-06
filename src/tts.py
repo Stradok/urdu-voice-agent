@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape
 import azure.cognitiveservices.speech as speechsdk
 
 from . import settings as app_settings
+from .audio_devices import resolve_playback_device
 
 VOICE = "ur-PK-UzmaNeural"  # Urdu (Pakistan) female neural voice; ur-PK-AsadNeural is the male alternative
 
@@ -40,7 +41,8 @@ class Speaker:
             result = synthesizer.speak_ssml_async(ssml).get()
 
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                subprocess.run(["aplay", "-q", out_path], check=True)
+                device = resolve_playback_device(app_settings.load_settings()["speaker_device"])
+                subprocess.run(["aplay", "-q", "-D", device, out_path], check=True)
                 os.unlink(out_path)
                 return
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from . import persona, session_log
 from . import settings as app_settings
+from .audio_devices import list_capture_devices, list_playback_devices
 from .faq_store import FaqStore
 from .llm import ChatEngine
 
@@ -139,6 +140,11 @@ def add_example(entry: ExampleEntry):
     examples.append(entry.model_dump())
     persona.save_example_bank(examples)
     return examples
+
+
+@app.get("/audio/devices")
+def get_audio_devices():
+    return {"mic_devices": list_capture_devices(), "speaker_devices": list_playback_devices()}
 
 
 @app.get("/config/settings")

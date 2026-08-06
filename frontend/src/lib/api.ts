@@ -31,6 +31,18 @@ export interface AppSettings {
   llm_temperature: number;
   tts_rate_percent: number;
   vad_silence_ms: number;
+  mic_device: string;
+  speaker_device: string;
+}
+
+export interface AudioDevice {
+  id: string;
+  label: string;
+}
+
+export interface AudioDevices {
+  mic_devices: AudioDevice[];
+  speaker_devices: AudioDevice[];
 }
 
 export interface FaqEntry {
@@ -90,6 +102,8 @@ export const api = {
 
   getSettings: () => request<AppSettings>('/config/settings'),
   saveSettings: (settings: AppSettings) => request<AppSettings>('/config/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+
+  getAudioDevices: () => request<AudioDevices>('/audio/devices'),
 
   getFaq: () => request<FaqEntry[]>('/faq'),
   saveFaq: (entries: FaqEntry[]) => request<FaqEntry[]>('/faq', { method: 'PUT', body: JSON.stringify(entries) }),

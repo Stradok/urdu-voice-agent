@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, Gauge, Volume2, Ear } from 'lucide-react';
-import { api, type PersonaConfig, type AppSettings } from '../lib/api';
+import { Plus, Trash2, Gauge, Volume2, Ear, Mic, Speaker } from 'lucide-react';
+import { api, type PersonaConfig, type AppSettings, type AudioDevices } from '../lib/api';
 import { useLanguage } from '../lib/i18n';
 import LightBeamButton from '../components/LightBeamButton';
 import ElasticSlider from '../components/ElasticSlider';
+
+const selectCls = 'w-full bg-card border border-border rounded-md px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50';
 
 function EditableList({
   title,
@@ -54,11 +56,13 @@ export default function GuardrailsPage() {
   const { t } = useLanguage();
   const [persona, setPersona] = useState<PersonaConfig | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [devices, setDevices] = useState<AudioDevices | null>(null);
   const [savedMsg, setSavedMsg] = useState('');
 
   useEffect(() => {
     api.getPersona().then(setPersona);
     api.getSettings().then(setSettings);
+    api.getAudioDevices().then(setDevices);
   }, []);
 
   const saveAll = async () => {
@@ -148,6 +152,42 @@ export default function GuardrailsPage() {
             formatValue={(v) => `${Math.round(v)}ms`}
             onChangeCommitted={(v) => setSettings({ ...settings, vad_silence_ms: Math.round(v) })}
           />
+        </div>
+      </div>
+
+      <div className="space-y-4 border-t border-border pt-6">
+        <h3 className="text-sm font-medium text-muted-foreground">{t('guardrails_audio_devices')}</h3>
+
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Mic size={14} /> {t('guardrails_mic_device')}
+          </div>
+          <select
+            className={selectCls}
+            value={settings.mic_device}
+            onChange={(e) => setSettings({ ...settings, mic_device: e.target.value })}
+          >
+            <option value="auto">{t('audio_device_auto')}</option>
+            {devices?.mic_devices.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Speaker size={14} /> {t('guardrails_speaker_device')}
+          </div>
+          <select
+            className={selectCls}
+            value={settings.speaker_device}
+            onChange={(e) => setSettings({ ...settings, speaker_device: e.target.value })}
+          >
+            <option value="auto">{t('audio_device_auto')}</option>
+            {devices?.speaker_devices.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 
