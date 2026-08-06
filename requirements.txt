@@ -4,3 +4,6 @@ sentence-transformers
 groq
 python-dotenv
 azure-cognitiveservices-speech
+webrtcvad-wheels
+fastapi
+uvicorn[standard]

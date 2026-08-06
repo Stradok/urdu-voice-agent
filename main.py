@@ -43,7 +43,7 @@ def run_text_mode():
         if not user_text or user_text.lower() in {"exit", "quit"}:
             break
         reply = engine.reply(user_text)
-        print(f"سہیل: {reply}")
+        print(f"سارہ: {reply}")
 
 
 def run_voice_mode():
@@ -59,13 +59,13 @@ def run_voice_mode():
     print("اردو وائس ایجنٹ تیار ہے۔ بولنا شروع کریں (Ctrl+C سے بند کریں)")
     while True:
         try:
-            wav_path = record(seconds=5.0)
+            wav_path = record()
             user_text = transcriber.transcribe(wav_path)
             if not user_text:
                 continue
             print(f"آپ: {user_text}")
             reply = engine.reply(user_text)
-            print(f"سہیل: {reply}")
+            print(f"سارہ: {reply}")
             speaker.say(reply)
         except KeyboardInterrupt:
             break
