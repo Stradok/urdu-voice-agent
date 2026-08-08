@@ -27,6 +27,7 @@ const dict = {
   guardrails_tone_rules: { en: 'Tone Rules', ur: 'بولنے کے انداز کے اصول' },
   guardrails_guardrails: { en: 'Boundaries & Guardrails', ur: 'حدود اور احتیاطیں (گارڈریلز)' },
   guardrails_tuning: { en: 'Tuning', ur: 'ٹیوننگ' },
+  guardrails_llm_model: { en: 'AI Model (ranked best to worst for Urdu)', ur: 'اے آئی ماڈل (اردو کے لیے بہترین سے کمزور ترتیب میں)' },
   guardrails_temperature: {
     en: 'Response creativity (higher = more varied, lower = more predictable)',
     ur: 'جواب کی تخلیقی صلاحیت (زیادہ = زیادہ متنوع، کم = زیادہ متوقع)',
@@ -37,6 +38,10 @@ const dict = {
   guardrails_mic_device: { en: 'Input (microphone)', ur: 'ان پٹ (مائیک)' },
   guardrails_speaker_device: { en: 'Output (speaker)', ur: 'آؤٹ پٹ (اسپیکر)' },
   audio_device_auto: { en: 'Auto-detect', ur: 'خودکار پتہ لگائیں' },
+  guardrails_reply_language: { en: 'Reply Language', ur: 'جواب کی زبان' },
+  reply_language_auto: { en: 'Auto (match the customer)', ur: 'خودکار (گاہک کی زبان کے مطابق)' },
+  reply_language_urdu: { en: 'Urdu only', ur: 'صرف اردو' },
+  reply_language_english: { en: 'English only', ur: 'صرف انگریزی' },
   save: { en: 'Save', ur: 'محفوظ کریں' },
   save_all: { en: 'Save All', ur: 'سب محفوظ کریں' },
   saved: { en: 'Saved', ur: 'محفوظ ہو گیا' },
@@ -98,6 +103,15 @@ const dict = {
   learning_add_example: { en: 'Add as example', ur: 'مثال کے طور پر شامل کریں' },
   learning_added: { en: 'Added as example', ur: 'مثال کے طور پر شامل ہو گیا' },
   you: { en: 'You', ur: 'آپ' },
+
+  login_title: { en: 'Sign in to Sara', ur: 'سارہ میں سائن ان کریں' },
+  login_subtitle: { en: 'Sign in with the account created for your business.', ur: 'اپنے کاروبار کے لیے بنائے گئے اکاؤنٹ سے سائن ان کریں۔' },
+  login_email: { en: 'Email', ur: 'ای میل' },
+  login_password: { en: 'Password', ur: 'پاس ورڈ' },
+  login_button: { en: 'Sign in', ur: 'سائن ان کریں' },
+  login_loading: { en: 'Signing in...', ur: 'سائن ان ہو رہا ہے...' },
+  login_error: { en: 'Could not sign in - check your email and password.', ur: 'سائن ان نہیں ہو سکا - ای میل اور پاس ورڈ چیک کریں۔' },
+  logout_button: { en: 'Sign out', ur: 'سائن آؤٹ' },
 } as const;
 
 export type DictKey = keyof typeof dict;

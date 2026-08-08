@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, Gauge, Volume2, Ear, Mic, Speaker } from 'lucide-react';
-import { api, type PersonaConfig, type AppSettings, type AudioDevices } from '../lib/api';
+import { Plus, Trash2, Gauge, Volume2, Ear, Mic, Speaker, Cpu } from 'lucide-react';
+import { api, type PersonaConfig, type AppSettings, type AudioDevices, type LlmModelOption } from '../lib/api';
 import { useLanguage } from '../lib/i18n';
 import LightBeamButton from '../components/LightBeamButton';
 import ElasticSlider from '../components/ElasticSlider';
@@ -57,12 +57,14 @@ export default function GuardrailsPage() {
   const [persona, setPersona] = useState<PersonaConfig | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [devices, setDevices] = useState<AudioDevices | null>(null);
+  const [llmModels, setLlmModels] = useState<LlmModelOption[]>([]);
   const [savedMsg, setSavedMsg] = useState('');
 
   useEffect(() => {
     api.getPersona().then(setPersona);
     api.getSettings().then(setSettings);
     api.getAudioDevices().then(setDevices);
+    api.getLlmModels().then(setLlmModels);
   }, []);
 
   const saveAll = async () => {
@@ -111,6 +113,21 @@ export default function GuardrailsPage() {
       <div className="space-y-6 border-t border-border pt-6">
         <h3 className="text-sm font-medium text-muted-foreground">{t('guardrails_tuning')}</h3>
 
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Cpu size={14} /> {t('guardrails_llm_model')}
+          </div>
+          <select
+            className={selectCls}
+            value={settings.llm_model}
+            onChange={(e) => setSettings({ ...settings, llm_model: e.target.value })}
+          >
+            {llmModels.map((m) => (
+              <option key={m.value} value={m.value}>{m.label} — {m.note}</option>
+            ))}
+          </select>
+        </div>
+
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground justify-center">
             <Gauge size={14} /> {t('guardrails_temperature')}
@@ -153,6 +170,19 @@ export default function GuardrailsPage() {
             onChangeCommitted={(v) => setSettings({ ...settings, vad_silence_ms: Math.round(v) })}
           />
         </div>
+      </div>
+
+      <div className="space-y-1 border-t border-border pt-6">
+        <h3 className="text-sm font-medium text-muted-foreground">{t('guardrails_reply_language')}</h3>
+        <select
+          className={selectCls}
+          value={settings.reply_language}
+          onChange={(e) => setSettings({ ...settings, reply_language: e.target.value })}
+        >
+          <option value="auto">{t('reply_language_auto')}</option>
+          <option value="urdu">{t('reply_language_urdu')}</option>
+          <option value="english">{t('reply_language_english')}</option>
+        </select>
       </div>
 
       <div className="space-y-4 border-t border-border pt-6">

@@ -4,8 +4,10 @@ import sys
 
 from dotenv import load_dotenv
 
+from src.business_context import get_default_business
 from src.faq_store import FaqStore
 from src.llm import ChatEngine
+from src.settings import load_settings
 
 load_dotenv()
 
@@ -27,8 +29,9 @@ def check_required_keys(keys):
 
 
 def build_engine():
+    business = get_default_business()
     faq_store = FaqStore()
-    return ChatEngine(faq_store=faq_store)
+    return ChatEngine(faq_store=faq_store, business_id=business.id, business_type=business.business_type)
 
 
 def run_text_mode():
@@ -52,7 +55,8 @@ def run_voice_mode():
     from src.tts import Speaker
 
     check_required_keys(["GROQ_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"])
-    engine = build_engine()
+    business = get_default_business()
+    engine = ChatEngine(faq_store=FaqStore(), business_id=business.id, business_type=business.business_type)
     transcriber = Transcriber()
     speaker = Speaker()
 
@@ -60,13 +64,13 @@ def run_voice_mode():
     while True:
         try:
             wav_path = record()
-            user_text = transcriber.transcribe(wav_path)
+            user_text = transcriber.transcribe(wav_path, load_settings(business.id)["reply_language"])
             if not user_text:
                 continue
             print(f"آپ: {user_text}")
             reply = engine.reply(user_text)
             print(f"سارہ: {reply}")
-            speaker.say(reply)
+            speaker.say(reply, business.id)
         except KeyboardInterrupt:
             break
 

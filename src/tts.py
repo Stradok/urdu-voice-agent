@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+from uuid import UUID
 from xml.sax.saxutils import escape
 
 import azure.cognitiveservices.speech as speechsdk
@@ -25,8 +26,9 @@ class Speaker:
         )
         self.speech_config.speech_synthesis_voice_name = VOICE
 
-    def say(self, text: str):
-        rate = f"+{app_settings.load_settings()['tts_rate_percent']}%"
+    def say(self, text: str, business_id: UUID):
+        settings = app_settings.load_settings(business_id)
+        rate = f"+{settings['tts_rate_percent']}%"
         ssml = SSML_TEMPLATE.format(voice=VOICE, rate=rate, text=escape(text))
 
         last_error = None
@@ -41,7 +43,7 @@ class Speaker:
             result = synthesizer.speak_ssml_async(ssml).get()
 
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                device = resolve_playback_device(app_settings.load_settings()["speaker_device"])
+                device = resolve_playback_device(settings["speaker_device"])
                 subprocess.run(["aplay", "-q", "-D", device, out_path], check=True)
                 os.unlink(out_path)
                 return

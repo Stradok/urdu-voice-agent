@@ -9,7 +9,7 @@ The strategic position is deliberate: this project assembles existing, proven in
 ## Current State
 
 A single-tenant Electron desktop application:
-- One business's persona, FAQ index, inventory/menu/booking data, and session log, stored as flat JSON files on one machine.
+- One business's persona, FAQ index, inventory/menu/booking data, and session log — now stored in Postgres (Supabase), `business_id`-scoped throughout the backend, though only one business is ever resolved today (see Phase 0 §4's pre-auth seam).
 - No authentication, no multi-user support, no hosted deployment.
 - Voice I/O bound to the local machine's own microphone and speakers — this does not generalize to a hosted, multi-customer product.
 
@@ -37,7 +37,7 @@ Each phase builds on the last — nothing in Phase 0 is discarded later; later p
 
 | Component | Choice | Rationale |
 |---|---|---|
-| LLM (conversation logic) | **Groq**, `llama-3.3-70b-versatile` | Already integrated; among the cheapest and fastest inference available ($0.59 / $0.79 per M input/output tokens); free tier sufficient for pilot development. |
+| LLM (conversation logic) | **Groq**, `llama-3.3-70b-versatile` — **quality issue open, see note below** | Cheapest/fastest inference available ($0.59 / $0.79 per M input/output tokens), free tier sufficient for pilot volume. But: live testing surfaced Urdu script errors (letter substitutions, e.g. "سامان" garbled) — a known weak point of Llama-family models on Arabic-script languages. Given this product's explicit bar ("indistinguishable from a real person"), this is disqualifying if it can't be fixed by prompting alone. |
 | Speech-to-text | **Groq hosted Whisper** (`whisper-large-v3`) | $0.04/hour, Urdu-capable, removes the self-hosted GPU/CUDA dependency the project currently carries (`faster-whisper` + a machine-specific CUDA-12 library workaround). One less piece of infrastructure to operate. |
 | Text-to-speech | **Azure Speech** (`ur-PK-UzmaNeural`), already integrated | Proven, free-tier friendly (500k characters/month), production-grade Urdu voice. Groq's own TTS does not yet support Urdu in production (English/Arabic only as of this writing) and is not a substitute. |
 | TTS — evaluate as fast-follow | **Uplift AI** | Pakistan-specific Urdu voice model, free tier then ~$5/month, claims better Urdu quality than Azure/OpenAI at lower cost. Worth a direct listening comparison once Phase 0 is live; not a blocker. |
@@ -45,6 +45,35 @@ Each phase builds on the last — nothing in Phase 0 is discarded later; later p
 | Phone channel orchestration | **LiveKit Agents** (self-hosted, open source), with Groq + Azure/Uplift plugged in, over a SIP trunk | See "Phone Channel" below. |
 | Backend hosting | **Render** (free tier) | See Phase 0, Hosting. |
 | Frontend hosting | **Vercel** (free tier) | Static hosting, no cold-start concern. |
+
+### Open issue: Groq's Urdu script quality — corrected LLM options research (2026-08-08)
+
+Live testing (2026-08-07) reproduced a real defect: the LLM occasionally substitutes visually-similar Urdu letters (e.g. Noon/Laam confusion, "سامان" mangled) in generated replies. This isn't a prompting bug — it's a known characteristic of Llama-family models, which are trained on comparatively little high-quality Arabic-script data. Since the whole premise of this product is that Sara has to be indistinguishable from a real Urdu speaker, this is worth fixing at the model layer.
+
+**The earlier recommendation to switch to Claude Haiku 4.5 was wrong — corrected after actually finding real benchmark data.** It had been a "strong prior" based on Claude's general multilingual reputation, explicitly never verified. Real data since found (UrduMMLU, arXiv:2606.07167, June 2026 — an academic Urdu-understanding benchmark, not vendor marketing):
+
+| Model | Urdu accuracy | Input / Output $ per M tokens |
+|---|---|---|
+| Gemini-3.5-Flash | **90.34%** (best of all tested) | $1.50 / $9.00 |
+| Gemini-3.1-Flash-Lite | 84.68% | cheaper tier, not yet priced here |
+| GPT-5.4 | 84.53% | — |
+| Claude-Sonnet-4.6 | 82.94% | — |
+| DeepSeek-V4-Flash | 81.42% (best open-weight) | — |
+| **Gemma-4-31B-IT** (LiveKit Inference) | 76.39% | $1.20 / M **output** only, extremely voice-latency-optimized (381ms time-to-first-sentence, ~100ms warm token) |
+| Claude-Haiku-4.5 | **72.45%** — weaker than open-weight Gemma 4 | $1.00 / $5.00 |
+| Groq `llama-3.3-70b-versatile` (current) | not in this benchmark, but live-observed letter-substitution defects | $0.59 / $0.79, 100k tokens/day free |
+
+Two real candidates worth actually testing, not just theorizing about:
+1. **Gemini-3.5-Flash** — best raw Urdu accuracy by a wide margin, has a genuinely recurring free tier (unlike Anthropic's one-time credit) for cheap ongoing testing.
+2. **Gemma-4-31B-IT via LiveKit Inference** — beats Haiku on Urdu at a fraction of the cost and with dramatically lower latency, purpose-built for voice, and architecturally elegant since LiveKit Agents is already the planned Phase 1 phone-channel stack (§ Phone Channel below) — using Gemma 4 there means one vendor covers LLM + real-time orchestration + eventually telephony, instead of Groq+Azure+custom FastAPI glue. **Real unverified risk**: UrduMMLU is a multiple-choice accuracy benchmark — it says nothing about tool-calling reliability, which is what this codebase's actual bugs have been about (leaked tool-call text, wrong tool selection). A 31B open-weight model's function-calling reliability under our exact `TOOL_SCHEMAS` pattern is untested, and it hasn't been checked for the same script-corruption failure mode caught on Groq specifically.
+
+**OpenRouter as a testing shortcut, not a production base**: one API key gives access to Gemini/Gemma/DeepSeek/Claude/GPT through a single integration, with genuinely free rate-limited models (20 req/min, 200/day, no card) — the fastest way to benchmark several candidates today. Not recommended as the permanent architecture: pure passthrough pricing (no savings over going direct), an added network hop hurting latency for a voice product, and free-tier listings are volatile.
+
+**Per-business LLM model selection — ✅ live (2026-08-08).** Rather than pick one model globally, each business now chooses its own LLM from a dropdown on the Guardrails page (`AppSettings.llm_model`, e.g. `"openrouter:google/gemini-3.5-flash"` or `"groq:llama-3.3-70b-versatile"`). `src/llm.py`'s `LLM_CATALOG` is the single source of truth (provider, model slug, label, quality note), listed best-to-worst by the UrduMMLU accuracy numbers above; `GET /config/llm_models` exposes it to the frontend so the dropdown never hardcodes the list. `ChatEngine` re-reads the business's `llm_model` setting on every `reply()` call (not cached at construction), so switching models takes effect on the next message without needing to recreate the cached `ChatEngine` in `api.py`'s `_chat_engines`. Provider HTTP clients (`Groq`, and `OpenAI` pointed at OpenRouter's base URL for every non-Groq model) are cached per-provider at module level. Requires `OPENROUTER_API_KEY` in `.env` only if a business actually selects a non-Groq model — Groq remains the zero-setup default.
+
+**Real bug found and fixed along the way, unrelated to the provider work itself**: live testing during this refactor (2026-08-08) caught `_looks_like_leaked_tool_call()` missing a real case — the model wrote a normal Urdu greeting/prose reply and then appended a leaked `<function=check_appointment_slots>{...}</function>` tag *after* the prose, which the old `.startswith("<function")` check didn't catch (it only checked the message prefix). Customers were seeing raw function-call syntax mixed into otherwise normal replies. Fixed by checking for `"<function"` anywhere in the content, not just at the start; verified fixed live via the exact reproduction case.
+
+**Next step, not yet done**: build a small head-to-head eval — run our own actual failing cases (the Urdu pain/empathy test, the tool-calling flows, the original script-corruption prompts) through Gemini-3.5-Flash and Gemma-4-31B-IT side by side with Groq, on real conversations, not published benchmarks alone — since tool-calling reliability and tone/empathy are exactly what benchmarks don't measure and exactly what this project has actually broken on so far. Blocked on an `OPENROUTER_API_KEY` being added to `.env`.
 
 ### Why not a managed voice-agent platform (Retell, Vapi, Bland)?
 
@@ -58,7 +87,7 @@ LiveKit Agents is open source, has native Groq integration, and includes SIP tel
 
 ## Phase 0 — Detailed Plan
 
-### 1. Data Layer
+### 1. Data Layer — ✅ live (2026-08-07)
 
 Move off flat JSON files onto Postgres via Supabase. FAQ embeddings move from local ChromaDB onto pgvector in the same database — one durable store instead of two systems that can drift out of sync, and Chroma's on-disk index does not survive a redeploy on most free hosting tiers.
 
@@ -76,19 +105,44 @@ sessions / exchanges — per-business conversation history (was session_log's JS
 escalations          — per-business escalation log
 ```
 
-Tenant isolation is enforced at the application layer (`WHERE business_id = ...` on every query) and proven with an integration test that seeds two distinct fake businesses and asserts neither can see the other's data or resources — not assumed correct by construction.
+Tenant isolation is enforced at the application layer (`WHERE business_id = ...` on every query) and proven with an integration test (`tests/test_tenant_isolation.py`) that seeds two distinct fake businesses (a shoe store and a dental clinic) and asserts neither can see the other's stock, FAQ, sessions/exchanges, or escalations — including a dedicated test that deleting a business cascades and leaves zero orphaned rows anywhere. Passing against the real Supabase project, not a mock.
 
-### 2. Authentication
+**Security correction (2026-08-07):** the original plan said "application-layer isolation, not Postgres RLS, for Phase 0" — refined after actually setting up the project. Supabase auto-generates a public REST API (PostgREST) over every table by default, reachable with the publishable key — a key that will legitimately end up embedded in client-side widget JS once Phase 0's web widget ships (§5). If that API stays enabled with no RLS, anyone who opens their browser devtools on a client's website can read/write *every* business's data directly through Supabase, completely bypassing FastAPI and the app-layer `business_id` checks. Two independent mitigations, both applied: (1) **the Data API (PostgREST) is disabled entirely** in Project Settings — our backend talks to Postgres directly via a SQLAlchemy connection string, so the auto-REST surface is pure unneeded attack surface; (2) **RLS is enabled on every table with zero policies** (migration `d5716d6ee36f`) — default-deny for any role except the table owner, as defense-in-depth in case the Data API is ever re-enabled later. The backend's own connection is the owning role (via `DATABASE_URL`/`DIRECT_URL`), so this is a no-op for the app itself, confirmed by re-running the isolation tests with RLS on. (Note: this project uses Supabase's newer `publishable`/`secret` key pair, not the legacy `anon`/`service_role` names used in older Supabase docs and in earlier drafts of this plan — same roles, new names. The `secret` key is server-side only, never shipped to any frontend/widget bundle.)
+
+**Implementation notes for whoever touches this next:** `src/models.py` (SQLAlchemy models), `src/db.py` (engine/session, uses `DATABASE_URL` — the transaction-mode pooler, port 6543), `alembic/` (migrations, configured to run against `DIRECT_URL` — the session-mode pooler, port 5432, since transaction-mode pooling doesn't reliably support the session-level locks migrations need). `mic_device`/`speaker_device` were deliberately left out of `app_settings` — those are local-hardware settings for the Electron/CLI app, meaningless for a hosted business.
+
+### 2. Authentication — ✅ live for dashboard login (2026-08-08)
 
 Two distinct trust models:
 - **Dashboard login** (business owner): Supabase Auth, email + password. The backend verifies the issued JWT and resolves `business_id` from it.
-- **Widget** (anonymous end customers on a client's website): a public per-business `widget_key`, the same trust model used by Intercom/Crisp-style embeds — an identifier, not a secret.
+- **Widget** (anonymous end customers on a client's website): a public per-business `widget_key`, the same trust model used by Intercom/Crisp-style embeds — an identifier, not a secret. Not built yet — lands with the Web Widget (§5).
 
-For the pilot stage (1–3 businesses), no self-serve signup flow is required; each business's login is provisioned manually at onboarding.
+For the pilot stage (1–3 businesses), no self-serve signup flow is required; each business's login is provisioned manually at onboarding (`scripts/create_business_account.py`).
+
+**Explicit product requirement, not yet built (2026-08-08):** real business owners signing up should get OAuth (Google/GitHub sign-in), not email/password — no password to manage, faster onboarding, and Supabase Auth already supports it natively so this isn't a heavy lift when self-serve signup gets built. Email/password (current state) is fine for the 4 manually-provisioned pilot/test accounts, but should not be the primary path once real businesses are onboarding themselves.
+
+**How dashboard login actually works:** `src/auth.py`'s `get_current_business()` FastAPI dependency takes the request's `Authorization: Bearer <token>` header and forwards it to Supabase's own `/auth/v1/user` endpoint to verify it (rather than reimplementing JWT signature checking or tracking Supabase's signing-key rotation ourselves — one extra network hop per request, acceptable at pilot scale). The verified email is matched against `businesses.owner_email` to resolve `business_id`. Every `src/api.py` endpoint now takes `business: BusinessContext = Depends(get_current_business)` instead of the single startup-pinned business from the pre-auth seam (`src/business_context.py`, which the CLI still uses since it has no login). `src/api.py` keeps one `ChatEngine` per logged-in business (a dict keyed by `business_id`, built lazily), the same singleton-per-conversation pattern as before, just no longer pinned to one business at process start. A throwaway `GET /whoami` (returns `business_id`/`slug`/`business_type`) and `GET /health` (unauthenticated liveness check, used for the frontend's readiness poll) were added alongside it.
+
+Frontend: `frontend/src/lib/auth.ts` calls Supabase's password-grant token endpoint directly (`VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY` in `frontend/.env`, the publishable key is safe client-side by design) and stores the JWT in `localStorage`; `api.ts`'s `request()` attaches it to every call and clears it on a 401/403. `App.tsx` gates the whole app behind a new `LoginPage.tsx` until `/whoami` succeeds.
+
+**Business type scopes which tools the agent can even see — ✅ live.** Every business row has a `business_type` (`dentist_clinic`, `retail_store`, `clothing_brand`, `restaurant`, `bank`, or `demo` for the original all-tools test business), set at onboarding. `src/tools.py`'s `BUSINESS_TYPE_TOOLS` maps each type to its allowed tool names, and `tool_schemas_for(business_type)` filters `TOOL_SCHEMAS` before `ChatEngine` ever sends them to Groq — not just the tool's *execution* (already `business_id`-scoped since the Backend Refactor), but which tools the model is even offered. This directly addresses the real session log from 2026-08-07 (`20260807T152233-dafbe4.json`) that showed the model calling the *wrong* tool (dental appointment slots) mid-conversation about an unrelated product purchase — a dentist's agent literally cannot call `check_stock` anymore, regardless of what the model guesses.
+
+**Four real test accounts** were created to verify all of this against live data spanning different verticals, each with persona/guardrails/FAQ written in English on purpose (to test that English-authored configuration is followed correctly in an Urdu conversation) — see `scripts/seed_test_accounts.py` for full content and login credentials:
+
+| Business | slug | business_type | Tools offered |
+|---|---|---|---|
+| Bright Smile Dental Clinic | `dental-clinic` | `dentist_clinic` | `check_appointment_slots`, `recommend_human_agent` |
+| Urban Mart | `urban-mart` | `retail_store` | `check_stock`, `recommend_human_agent` |
+| Thread House | `thread-house` | `clothing_brand` | `check_stock`, `recommend_human_agent` |
+| Sadiq Bank | `sadiq-bank` | `bank` | `recommend_human_agent` only |
+
+Testing this surfaced two real bugs, both fixed the same day:
+1. **Cross-language name matching failed.** `_best_match()` in `src/tools.py` only did lexical/difflib matching, so a native-Urdu query ("دانتوں کی صفائی") never matched an English catalog entry ("Teeth Cleaning") — no shared characters. It worked by accident for transliterated loanwords (`ایئربڈز` → "earbuds") but not genuine translation pairs. Fixed by adding a multilingual-embedding fallback (`intfloat/multilingual-e5-small`, same model used for FAQ retrieval) when lexical matching finds nothing, at a 0.75 cosine-similarity threshold. Verified live: the same Urdu query now correctly returns Bright Smile's real appointment slots.
+2. **English-authored personas could make the agent reply in English to an Urdu message**, despite `reply_language: "auto"`. Root cause: the `LANGUAGE_MODE_INSTRUCTIONS` system message is appended once, early in the prompt — a tool-call round trip (assistant tool-call message + tool result message) pushes it several messages back by the time the final reply is generated, and a long English persona/guardrail block can dominate by sheer recency. Fixed in `ChatEngine._run_tool_calls()` by re-appending the language instruction as the very last message before the final completion call, whenever a tool was used. **Verified live (2026-08-08):** logged in as `bank@sara-test.local`, sent `"میرا اکاؤنٹ نمبر 1234567890 ہے، بیلنس بتائیں"` — reply came back fully in Urdu (`"براہ کرم اپنی اکاؤنٹ کی معلومات کے لیے ہمارے محفوظ چیٹ یا فون لائن کا استعمال کریں۔"`) and correctly never echoed the account number back.
 
 ### 3. Per-Business Provider Credentials & Usage
 
-Each business gets its **own** Groq account and Azure Speech resource, provisioned by us during onboarding — not a shared key across all clients. This matters for a reason beyond isolation: rate limits on Groq (and effectively every LLM/API provider) are enforced at the **account** level, not per-key, so multiple keys under one shared account would still draw from one pooled quota. A dedicated account per business gives each client their own free tier (100k Groq tokens/day, 500k Azure characters/month) — at realistic small-business volume, most clients likely never leave it, meaning near-zero marginal LLM/TTS cost per client rather than one shared pool being split across everyone.
+Each business gets its **own** Groq account and Azure Speech resource, provisioned by us during onboarding — not a shared key across all clients. This matters for a reason beyond isolation: rate limits on Groq (and effectively every LLM/API provider) are enforced at the **account** level, not per-key, so multiple keys under one shared account would still draw from one pooled quota. A dedicated account per business gives each client their own free tier (100k Groq tokens/day, 500k Azure characters/month) — at realistic small-business volume, most clients likely never leave it, meaning near-zero marginal LLM/TTS cost per client rather than one shared pool being split across everyone. **Concretely demonstrated, not just theoretical:** testing all 4 pilot accounts against the one shared `GROQ_API_KEY` in `.env` exhausted its 100k-tokens/day free tier before test coverage was even complete (2026-08-08) — exactly the shared-pool problem this section describes, still open.
 
 Onboarding a business: create its Groq account and Azure Speech resource, store the resulting credentials encrypted (Supabase Vault, already a natural fit given the DB choice) against that business's row. `ChatEngine`, the STT call, and the TTS call are constructed per-business using its own decrypted credentials — a direct extension of the singleton-removal work already required in the backend refactor below, not separate work.
 
@@ -98,11 +152,21 @@ Onboarding a business: create its Groq account and Azure Speech resource, store 
 
 When a business's own quota is exhausted, the existing graceful-fallback behavior in `llm.py` (catch the provider error, return a fallback message) now applies per-business instead of platform-wide — and the usage bar simply reads 100%, self-explanatory without extra UI work.
 
-### 4. Backend Refactor
+### 4. Backend Refactor — ✅ live (2026-08-08)
 
-The most significant correctness issue to resolve in this pass: `ChatEngine.history` currently holds one shared, in-memory conversation history for the entire server process — every caller, indefinitely. This becomes per-conversation history loaded from the `exchanges` table. `session_log.py`'s module-level "current session" pointer is replaced the same way — real rows scoped by business and session, not a global pointer.
+Every read/write in the running app moved off local JSON/Chroma onto the Postgres schema from §1: `src/persona.py`, `src/settings.py`, `src/faq_store.py` (Chroma replaced with pgvector `cosine_distance` queries), `src/tools.py`, and `src/session_log.py` are now all Postgres-backed, each function taking a `business_id` (and, where relevant, `session_id`) parameter instead of reading a fixed local file. `src/api.py` and `main.py` were updated to thread it through. A one-off migration script, `scripts/seed_default_business.py`, copied the existing local JSON/FAQ/store data into a real `businesses` row (slug `default`) plus its child rows — including computing and storing pgvector embeddings for all 7 FAQ entries. The local JSON files under `data/` are left in place as a pre-migration snapshot but are no longer read by the app.
 
-Every function in `src/tools.py` (`check_stock`, `book_table`, etc.) gains a `business_id` parameter, bound at the call site — the LLM itself never sees or supplies it.
+`mic_device`/`speaker_device` stay in a small local file (`data/config/local_settings.json`) rather than the `app_settings` table, per the reasoning already recorded in §1 — they're this machine's hardware settings, meaningless for a hosted business.
+
+Every function in `src/tools.py` (`check_stock`, `book_table`, etc.) now takes `business_id` as its first argument, bound by `ChatEngine._run_tool_calls()` at the call site — the LLM itself never sees or supplies it (not part of `TOOL_SCHEMAS`). `recommend_human_agent` additionally takes `session_id` the same way, so escalations land against a real `sessions` row instead of a guessed pointer.
+
+**Pre-auth seam (`src/business_context.py`):** written the same day as this refactor, before dashboard login existed. `src/api.py` has since moved off it entirely onto real per-request `business_id` resolution (§2) — every endpoint now takes `business: BusinessContext = Depends(get_current_business)`, and `ChatEngine` is a dict keyed by `business_id` instead of one startup-pinned singleton. `business_context.py` itself lives on only because `main.py` (the standalone CLI) has no login and still needs a "which business" default. That said, the fix that mattered even before real auth existed still shipped as part of this refactor: `ChatEngine.history` combined with the old JSON `session_log` meant a corrupted or partially-written session file could silently lose a conversation's ground truth; history is now persisted to the `exchanges` table exchange-by-exchange as the conversation happens.
+
+`TOOL_SCHEMAS` business-type filtering (only offer a dentist's agent `check_appointment_slots`, only offer a store's agent `check_stock`) landed in §2 once real `business_type` assignment existed, not in this pass — see §2 for how it works and the real bug it fixes.
+
+Verified live against the real Supabase database (not mocked): stock listing and specific lookup, appointment-slot lookup, FAQ retrieval via pgvector (cosine-distance grounding on "return policy" correctly matched), table booking (confirmed the row actually leaves `table_slots` and lands in `bookings`), and human escalation (confirmed a real `escalations` row with the right `session_id`). `tests/test_tenant_isolation.py`'s 5 tests still pass unchanged.
+
+**Guardrails must hold regardless of which language the customer uses.** A business owner may write their persona/guardrail config in English while customers speak Urdu (or vice versa) — this should already work by construction, since `build_system_prompt()` feeds the persona text to the LLM as-is and the model reads/enforces instructions in whichever language they're written, independent of the conversation's language (the `reply_language` setting added 2026-08-07 only controls *output* language, not instruction comprehension). Confirm this holds with a real test (English guardrails + Urdu conversation) before relying on it — not yet verified live.
 
 ### 5. Web Widget Channel
 
@@ -150,6 +214,16 @@ One policy detail to design around: WhatsApp permits free-form business messages
 
 `src/tools.py`'s `TOOLS_BY_NAME`/`TOOL_SCHEMAS` pattern, and the business-scoped dispatch established in Phase 0, is the seam new tools slot into: `send_product_photo`, `send_invoice` (routed to WhatsApp, email, or SMS depending on what the customer has available), `send_help_video`. Media storage uses Supabase Storage, already provisioned alongside the database.
 
+**Appointment booking via Google Calendar** — an alternative/addition to the existing custom `table_slots`/`bookings` system: `book_table`-style tools call the Google Calendar API (per-business OAuth, stored in Supabase Vault same as the Groq/Azure credentials) to create a real calendar event the business owner already sees in their own calendar app, instead of a booking record only visible inside our dashboard. Worth offering as a business-owner choice at onboarding (some will prefer staying inside our system; some will already run their scheduling off Google Calendar and want it to stay the source of truth).
+
+**Known gap, found live (2026-08-08):** asked the dental-clinic account to book "tomorrow" and it agreed without checking that tomorrow was a Sunday. Root cause: `TableSlot` (`src/models.py`) is just a bare `date_time: str` — no concept of clinic operating days/hours, no recurring generation, and no per-doctor slot management. The seed script only wrote 2 days' worth of rows, so there's no real availability model at all right now, just whatever rows happen to exist. Needed before this is real:
+- Business-level operating hours (open days, start/end time, e.g. 9am–6pm) and a slot duration (e.g. 30 min) stored per business, used both to generate the slot grid and to make the agent itself refuse/reschedule around closed days instead of just trusting whatever rows are in `table_slots`.
+- A recurring slot-generation job (or generate-on-read for a rolling window) instead of one-off seeded rows, so availability doesn't silently run out.
+- A way for the business owner (e.g. the dentist) to open/close individual slots — the WhatsApp channel above is one candidate interface for this once it exists ("check", "uncheck" a slot via message), same idea as the Google Calendar option but staying inside our own system.
+This is a real product gap, not yet scheduled against a specific phase — deferred while Phase 0 focuses on core conversation quality (latency, contextual/emotional understanding, tool-scoping correctness) per direct instruction, but it needs to land before any pilot business goes live on real bookings.
+
+**Delivery handoff — calling/messaging a real courier, not modeling logistics ourselves.** When a customer needs something delivered, the agent isn't meant to compute routes or run a courier fleet — it hands off to whichever delivery contact the *business* configures (a rider's WhatsApp/phone number, a local courier service like Leopards Courier, a ride-hailing delivery option like InDrive, or the business owner's own number for manual dispatch). Concretely: a `dispatch_delivery` tool takes the order details + customer address, and either places a WhatsApp/SMS message to the configured delivery contact (reusing the WhatsApp channel above) or — for a phone-only contact — this is exactly the phone channel's outbound-call capability once LiveKit Agents is live, placing a real call to relay the delivery details. Delivery *cost* itself (e.g. a flat per-km rate) is a simple business-configured rate table, not a live pricing API — most local delivery/courier arrangements in this market are informal enough that "call the guy" is genuinely the mechanism, so the tool should make that call/message happen rather than trying to replace it with computed logistics.
+
 ### Continuous Learning & RAG Architecture
 
 Today's retrieval is intentionally simple: one embedding model (`multilingual-e5-small`), one flat vector index per business, top-1 match against a fixed distance threshold. That was the right starting point for Phase 0. This section defines the upgrade path once there's real call volume to learn from — both a better retrieval pipeline, and a safe mechanism for the knowledge base to actually grow from real conversations rather than staying static until someone edits it by hand.
@@ -163,6 +237,8 @@ Today's retrieval is intentionally simple: one embedding model (`multilingual-e5
 1. **Hybrid search**: combine dense vector similarity (the embedding model above) with sparse keyword search (Postgres's native full-text search — already in the same database, no extra system needed), merged via Reciprocal Rank Fusion. Dense retrieval handles paraphrasing and synonyms; keyword search catches exact terms — product names, order numbers, code-switched words — that embeddings alone can miss, which matters more for Urdu than for a high-resource language given comparatively less embedding-model training data.
 2. **Reranking**: retrieve a broader candidate set cheaply via hybrid search, then rerank with a cross-encoder (e.g., BGE-Reranker, same open-source family as the embedding model) before handing the top few results to the LLM. Consistently the highest-ROI single improvement to retrieval quality; adds a small latency cost, worth it once quality issues actually appear rather than defaulting to it before Phase 0 data exists to justify it.
 3. **Multi-result synthesis, not single-match**: replace today's top-1-with-hard-cutoff with retrieving several candidates above a lower confidence bar and letting the LLM synthesize across them — handles the common case where a full answer spans more than one stored fact.
+
+**Not the same bug as tool-call confusion.** A real session (2026-08-07, `20260807T152233-dafbe4.json`) showed the agent answering a garbled message with the wrong *tool call* (dental appointment slots mid-conversation about buying a book) — this is a tool-selection/grounding problem, fixed directly in `llm.py`/`persona.json` the same day (don't call a tool on unclear input; retry-then-escalate if a tool call leaks as raw text). It's unrelated to FAQ retrieval quality and isn't fixed by the hybrid-search work above — keep the two straight when prioritizing.
 
 **Knowledge classification ("arrange the data for each client")**: every stored knowledge unit gets a `category` (free-form or a light per-vertical taxonomy — policy, pricing, hours, product, etc., since the agent needs to fit a retail shop, a clinic, or a restaurant equally well) and a `source` tag (`admin_entered` vs `call_derived`). This isn't just organizational — it's what lets the dashboard show a business owner which facts they entered themselves versus which the agent picked up from real customer conversations, and lets call-derived facts be weighted or surfaced differently until a human has reviewed them.
 
@@ -244,7 +320,11 @@ Preserved from an earlier analysis of a hypothetical large client (a national ba
 
 ## Immediate Next Steps
 
-1. **[User]** Create a free [Supabase](https://supabase.com) project — provides the Postgres connection string and JWT secret needed to begin the backend refactor. This is the only account currently blocking code; everything else (LiveKit, Uplift AI, WhatsApp, etc.) belongs to Phase 1.
-2. **[Agent]** Enable the `pgvector` extension; write the SQLAlchemy models and Alembic migration for the schema above.
-3. **[Agent]** Seed two deliberately distinct fake businesses (e.g., retail and restaurant) so tenant isolation is provable from the first test, not assumed.
-4. **[Agent]** Build `src/db.py` and `src/auth.py` (JWT verification, `business_id` resolution), proven with a throwaway `/whoami` endpoint before any further work proceeds.
+1. ✅ **[User]** Create a free [Supabase](https://supabase.com) project (2026-08-07).
+2. ✅ **[Agent]** Enable `pgvector`; write the SQLAlchemy models and Alembic migrations (2026-08-07).
+3. ✅ **[Agent]** Seed two deliberately distinct fake businesses and prove tenant isolation (2026-08-07).
+4. ✅ **[Agent]** Backend refactor — every read/write path moved onto Postgres, `business_id`-scoped throughout, verified live (2026-08-08). See Phase 0 §4.
+5. ✅ **[Agent]** Dashboard login (`src/auth.py`, Supabase JWT verification via `/auth/v1/user`), `business_type`-based tool scoping, and a frontend login page — 4 real test accounts (dental clinic, retail store, clothing brand, bank) created and verified live, including cross-language name matching and English-guardrail-in-Urdu-conversation fixes (2026-08-08). See Phase 0 §2.
+6. ✅ **[Agent]** Re-verified the English-guardrail language-reassertion fix live against the bank test account (2026-08-08) — Urdu in, Urdu out, account number correctly withheld. See Phase 0 §2.
+7. **[Agent]** Per-business provider credentials (Groq/Azure per business, Supabase Vault) — the shared-key rate-limit collision from testing today (§3) is the concrete case for doing this next, before onboarding any real pilot client.
+8. **[Agent]** Widget key / anonymous end-customer auth, and the web widget channel itself (§5) — dashboard login only covers the business owner side so far.

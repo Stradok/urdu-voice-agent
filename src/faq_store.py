@@ -1,58 +1,58 @@
-import json
-from pathlib import Path
+from uuid import UUID
 
-import chromadb
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import select
 
-FAQ_PATH = Path(__file__).resolve().parent.parent / "data" / "faq" / "faq.json"
-CHROMA_DIR = Path(__file__).resolve().parent.parent / "data" / "chroma"
+from .db import get_session
+from .models import FaqEntry
 
 # Similarity below this means "not an FAQ match" -> fall back to free conversation.
-# Chroma returns cosine distance (0 = identical, 2 = opposite); tune after testing.
+# pgvector's cosine_distance is 1 - cosine_similarity (0 = identical, 2 = opposite) -
+# same definition Chroma used, so this threshold carries over unchanged.
 MATCH_DISTANCE_THRESHOLD = 0.22
+# How many close matches to hand the LLM, not just the single closest - see get_context.
+FAQ_TOP_K = 3
 
 
 class FaqStore:
     def __init__(self, embed_model_name: str = "intfloat/multilingual-e5-small", device: str = "cuda"):
         self.embedder = SentenceTransformer(embed_model_name, device=device)
-        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self.collection = self.client.get_or_create_collection("faq")
-        self._sync_from_json()
 
-    def _sync_from_json(self):
-        with open(FAQ_PATH, encoding="utf-8") as f:
-            entries = json.load(f)
-
-        existing_ids = set(self.collection.get()["ids"])
-        wanted_ids = {e["id"] for e in entries}
-
-        # Remove entries deleted from faq.json
-        stale = existing_ids - wanted_ids
-        if stale:
-            self.collection.delete(ids=list(stale))
-
-        new_entries = [e for e in entries if e["id"] not in existing_ids]
-        if new_entries:
-            questions = ["passage: " + e["question"] for e in new_entries]
+    def sync_embeddings(self, business_id: UUID):
+        """Embed any FAQ entries for this business that don't have an embedding yet (new
+        or just-edited via the FAQ page). Called after every FAQ write, not on every
+        query, so a normal chat turn never pays for it."""
+        with get_session() as session:
+            entries = session.scalars(
+                select(FaqEntry).where(FaqEntry.business_id == business_id, FaqEntry.embedding.is_(None))
+            ).all()
+            if not entries:
+                return
+            questions = ["passage: " + e.question for e in entries]
             embeddings = self.embedder.encode(questions, normalize_embeddings=True).tolist()
-            self.collection.add(
-                ids=[e["id"] for e in new_entries],
-                embeddings=embeddings,
-                documents=[e["answer"] for e in new_entries],
-                metadatas=[{"question": e["question"]} for e in new_entries],
-            )
+            for entry, embedding in zip(entries, embeddings):
+                entry.embedding = embedding
 
-    def search(self, query: str):
-        """Return (answer, distance) for the closest FAQ match, or (None, None) if store is empty."""
-        query_emb = self.embedder.encode(["query: " + query], normalize_embeddings=True).tolist()
-        result = self.collection.query(query_embeddings=query_emb, n_results=1)
-        if not result["documents"] or not result["documents"][0]:
-            return None, None
-        return result["documents"][0][0], result["distances"][0][0]
+    def get_context(self, business_id: UUID, query: str) -> str | None:
+        """Return FAQ context to ground the LLM on, or None if nothing matches closely enough.
 
-    def get_context(self, query: str):
-        """Return FAQ answer text to ground the LLM on, or None if the query doesn't match any FAQ closely enough."""
-        answer, distance = self.search(query)
-        if answer is None or distance > MATCH_DISTANCE_THRESHOLD:
+        Returns the top few matches within threshold, not just the single closest - two FAQs
+        can sit within noise distance of each other. Observed live (2026-08-08): for a Roman-
+        Urdu "clinic timings" query, "Where is the clinic located?" (distance 0.1385) narrowly
+        beat "What are your clinic hours?" (0.1399) - a top-1-only query silently handed the
+        LLM the address instead of the hours, with no signal a near-tied second candidate
+        existed. Each match includes its own question alongside the answer so the model can
+        judge which one actually answers what was asked, rather than trusting whichever
+        embedding search ranked marginally first."""
+        query_embedding = self.embedder.encode(["query: " + query], normalize_embeddings=True)[0].tolist()
+        with get_session() as session:
+            rows = session.execute(
+                select(FaqEntry.question, FaqEntry.answer, FaqEntry.embedding.cosine_distance(query_embedding).label("distance"))
+                .where(FaqEntry.business_id == business_id, FaqEntry.embedding.isnot(None))
+                .order_by("distance")
+                .limit(FAQ_TOP_K)
+            ).all()
+        matches = [row for row in rows if row.distance <= MATCH_DISTANCE_THRESHOLD]
+        if not matches:
             return None
-        return answer
+        return "\n".join(f"سوال: {m.question} | جواب: {m.answer}" for m in matches)

@@ -25,8 +25,12 @@ class Transcriber:
     def __init__(self, model_size: str = "small", device: str = "cuda", compute_type: str = "float16"):
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    def transcribe(self, wav_path: str) -> str:
-        segments, _ = self.model.transcribe(wav_path, language="ur")
+    def transcribe(self, wav_path: str, reply_language: str = "auto") -> str:
+        # "auto" lets Whisper detect the spoken language per-utterance (needed for clean
+        # English transcription); "urdu"/"english" hint the language explicitly, which is
+        # more reliable for short utterances (Whisper's auto-detect confuses Urdu/Hindi).
+        whisper_language = {"urdu": "ur", "english": "en"}.get(reply_language)
+        segments, _ = self.model.transcribe(wav_path, language=whisper_language)
         text = "".join(segment.text for segment in segments).strip()
         os.unlink(wav_path)
         return text

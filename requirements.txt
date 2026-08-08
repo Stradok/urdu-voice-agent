@@ -1,9 +1,15 @@
 faster-whisper
-chromadb
 sentence-transformers
 groq
+openai
 python-dotenv
 azure-cognitiveservices-speech
 webrtcvad-wheels
 fastapi
 uvicorn[standard]
+httpx
+sqlalchemy
+psycopg2-binary
+alembic
+pgvector
+pytest

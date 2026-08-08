@@ -1,10 +1,22 @@
+import { getToken, logout } from './auth';
+
 const BASE_URL = 'http://127.0.0.1:8420';
 
+export class AuthError extends Error {}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...options,
   });
+  if (res.status === 401 || res.status === 403) {
+    logout();
+    throw new AuthError('session expired, please log in again');
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${options?.method ?? 'GET'} ${path} failed (${res.status}): ${body}`);
@@ -33,6 +45,14 @@ export interface AppSettings {
   vad_silence_ms: number;
   mic_device: string;
   speaker_device: string;
+  reply_language: string;
+  llm_model: string;
+}
+
+export interface LlmModelOption {
+  value: string;
+  label: string;
+  note: string;
 }
 
 export interface AudioDevice {
@@ -89,7 +109,16 @@ export interface Escalation {
   reason: string;
 }
 
+export interface WhoAmI {
+  business_id: string;
+  slug: string;
+  business_type: string;
+}
+
 export const api = {
+  health: () => request<{ status: string }>('/health'),
+  whoami: () => request<WhoAmI>('/whoami'),
+
   chat: (message: string) => request<{ reply: string }>('/chat', { method: 'POST', body: JSON.stringify({ message }) }),
   voiceTurn: () => request<{ user_text: string; reply: string }>('/voice_turn', { method: 'POST' }),
 
@@ -102,6 +131,8 @@ export const api = {
 
   getSettings: () => request<AppSettings>('/config/settings'),
   saveSettings: (settings: AppSettings) => request<AppSettings>('/config/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+
+  getLlmModels: () => request<LlmModelOption[]>('/config/llm_models'),
 
   getAudioDevices: () => request<AudioDevices>('/audio/devices'),
 

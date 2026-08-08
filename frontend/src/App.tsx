@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { MessageCircle, ShieldCheck, Package, HelpCircle, GraduationCap } from 'lucide-react';
-import { api } from './lib/api';
+import { MessageCircle, ShieldCheck, Package, HelpCircle, GraduationCap, LogOut } from 'lucide-react';
+import { api, type WhoAmI } from './lib/api';
+import { getToken, logout } from './lib/auth';
 import { useLanguage } from './lib/i18n';
 import LoadingScreen from './components/LoadingScreen';
 import SplashScreen from './components/SplashScreen';
 import MagnificationDock, { type DockItemData } from './components/MagnificationDock';
 import LanguageToggle from './components/LanguageToggle';
+import LoginPage from './pages/LoginPage';
 import ChatPage from './pages/ChatPage';
 import GuardrailsPage from './pages/GuardrailsPage';
 import StoreDataPage from './pages/StoreDataPage';
@@ -18,6 +20,8 @@ export default function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [page, setPage] = useState<Page>('chat');
+  const [business, setBusiness] = useState<WhoAmI | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const { lang, t } = useLanguage();
 
   useEffect(() => {
@@ -25,7 +29,7 @@ export default function App() {
     const poll = async () => {
       while (!cancelled) {
         try {
-          await api.getSettings();
+          await api.health();
           if (!cancelled) setBackendReady(true);
           return;
         } catch {
@@ -39,12 +43,35 @@ export default function App() {
     };
   }, []);
 
-  if (!backendReady) {
+  useEffect(() => {
+    if (!backendReady) return;
+    if (!getToken()) {
+      setCheckingAuth(false);
+      return;
+    }
+    api
+      .whoami()
+      .then(setBusiness)
+      .catch(() => setBusiness(null))
+      .finally(() => setCheckingAuth(false));
+  }, [backendReady]);
+
+  if (!backendReady || checkingAuth) {
     return <LoadingScreen label={t('loading_label')} />;
   }
 
   if (showSplash) {
     return <SplashScreen onDone={() => setShowSplash(false)} />;
+  }
+
+  if (!business) {
+    return (
+      <LoginPage
+        onLoggedIn={() => {
+          api.whoami().then(setBusiness);
+        }}
+      />
+    );
   }
 
   const dockItems: DockItemData[] = [
@@ -57,7 +84,17 @@ export default function App() {
 
   return (
     <div dir={lang === 'en' ? 'ltr' : 'rtl'} className="h-full w-full flex flex-col bg-background text-foreground">
-      <div className="flex-shrink-0 flex justify-end px-4 pt-3">
+      <div className="flex-shrink-0 flex items-center justify-between px-4 pt-3">
+        <button
+          onClick={() => {
+            logout();
+            setBusiness(null);
+          }}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          title={business.slug}
+        >
+          <LogOut size={14} /> {t('logout_button')}
+        </button>
         <LanguageToggle />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">

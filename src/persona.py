@@ -1,35 +1,59 @@
-import json
-from pathlib import Path
+from uuid import UUID
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "data" / "config"
-PERSONA_PATH = CONFIG_DIR / "persona.json"
-EXAMPLE_BANK_PATH = CONFIG_DIR / "example_bank.json"
+from sqlalchemy import select
 
-
-def load_persona_config() -> dict:
-    with open(PERSONA_PATH, encoding="utf-8") as f:
-        return json.load(f)
+from .db import get_session
+from .models import ExampleBankEntry, PersonaConfig
 
 
-def save_persona_config(config: dict):
-    with open(PERSONA_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+def load_persona_config(business_id: UUID) -> dict:
+    with get_session() as session:
+        cfg = session.scalar(select(PersonaConfig).where(PersonaConfig.business_id == business_id))
+        return {
+            "name": cfg.name,
+            "role_description": cfg.role_description,
+            "tone_rules": cfg.tone_rules,
+            "faq_grounding_instruction": cfg.faq_grounding_instruction,
+            "code_switching_note": cfg.code_switching_note,
+            "tools_instruction": cfg.tools_instruction,
+            "guardrails": cfg.guardrails,
+        }
 
 
-def load_example_bank() -> list[dict]:
-    with open(EXAMPLE_BANK_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def save_persona_config(business_id: UUID, config: dict):
+    with get_session() as session:
+        cfg = session.scalar(select(PersonaConfig).where(PersonaConfig.business_id == business_id))
+        cfg.name = config["name"]
+        cfg.role_description = config["role_description"]
+        cfg.tone_rules = config["tone_rules"]
+        cfg.faq_grounding_instruction = config["faq_grounding_instruction"]
+        cfg.code_switching_note = config["code_switching_note"]
+        cfg.tools_instruction = config["tools_instruction"]
+        cfg.guardrails = config["guardrails"]
 
 
-def save_example_bank(examples: list[dict]):
-    with open(EXAMPLE_BANK_PATH, "w", encoding="utf-8") as f:
-        json.dump(examples, f, ensure_ascii=False, indent=2)
+def load_example_bank(business_id: UUID) -> list[dict]:
+    with get_session() as session:
+        entries = session.scalars(select(ExampleBankEntry).where(ExampleBankEntry.business_id == business_id)).all()
+        return [{"user": e.user_text, "assistant": e.assistant_text} for e in entries]
 
 
-def build_system_prompt() -> str:
-    """Assembled fresh from data/config/persona.json on every call, so edits made through
-    the settings UI take effect on the very next message without restarting the app."""
-    cfg = load_persona_config()
+def save_example_bank(business_id: UUID, examples: list[dict]):
+    with get_session() as session:
+        session.query(ExampleBankEntry).filter(ExampleBankEntry.business_id == business_id).delete()
+        for ex in examples:
+            session.add(ExampleBankEntry(business_id=business_id, user_text=ex["user"], assistant_text=ex["assistant"]))
+
+
+def add_example(business_id: UUID, example: dict):
+    with get_session() as session:
+        session.add(ExampleBankEntry(business_id=business_id, user_text=example["user"], assistant_text=example["assistant"]))
+
+
+def build_system_prompt(business_id: UUID) -> str:
+    """Assembled fresh from Postgres on every call, so edits made through the settings UI
+    take effect on the very next message without restarting the app."""
+    cfg = load_persona_config(business_id)
 
     sections = [cfg["role_description"], ""]
 

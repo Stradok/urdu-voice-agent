@@ -1,73 +1,65 @@
-import json
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+from uuid import UUID
 
-SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "sessions"
-ESCALATIONS_PATH = SESSIONS_DIR / "escalations.json"
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-_current_session_id = None
-_current_session_path = None
+from .db import get_session
+from .models import Escalation, Exchange, Session
 
 
-def start_session() -> str:
-    global _current_session_id, _current_session_path
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _current_session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
-    _current_session_path = SESSIONS_DIR / f"{_current_session_id}.json"
-    with open(_current_session_path, "w", encoding="utf-8") as f:
-        json.dump(
+def start_session(business_id: UUID, channel: str = "dashboard") -> UUID:
+    with get_session() as session:
+        row = Session(business_id=business_id, channel=channel)
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def log_exchange(session_id: UUID, user_text: str, reply_text: str):
+    with get_session() as session:
+        session.add(Exchange(session_id=session_id, user_text=user_text, assistant_text=reply_text))
+
+
+def log_escalation(business_id: UUID, session_id: UUID | None, reason: str):
+    with get_session() as session:
+        session.add(Escalation(business_id=business_id, session_id=session_id, reason=reason))
+
+
+def list_sessions(business_id: UUID) -> list[dict]:
+    with get_session() as session:
+        rows = session.scalars(
+            select(Session)
+            .where(Session.business_id == business_id)
+            .options(selectinload(Session.exchanges))
+            .order_by(Session.started_at)
+        ).all()
+        return [
             {
-                "session_id": _current_session_id,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "exchanges": [],
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-    return _current_session_id
+                "session_id": str(row.id),
+                "started_at": row.started_at.isoformat(),
+                "exchanges": [
+                    {
+                        "timestamp": ex.timestamp.isoformat(),
+                        "user": ex.user_text,
+                        "assistant": ex.assistant_text,
+                    }
+                    for ex in sorted(row.exchanges, key=lambda e: e.timestamp)
+                ],
+            }
+            for row in rows
+        ]
 
 
-def log_exchange(user_text: str, reply_text: str):
-    if _current_session_path is None:
-        start_session()
-    with open(_current_session_path, encoding="utf-8") as f:
-        data = json.load(f)
-    data["exchanges"].append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "user": user_text,
-        "assistant": reply_text,
-    })
-    with open(_current_session_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def log_escalation(reason: str):
-    escalations = list_escalations()
-    escalations.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "session_id": _current_session_id,
-        "reason": reason,
-    })
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(ESCALATIONS_PATH, "w", encoding="utf-8") as f:
-        json.dump(escalations, f, ensure_ascii=False, indent=2)
-
-
-def list_sessions() -> list[dict]:
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    sessions = []
-    for path in sorted(SESSIONS_DIR.glob("*.json")):
-        if path.name == "escalations.json":
-            continue
-        with open(path, encoding="utf-8") as f:
-            sessions.append(json.load(f))
-    return sessions
-
-
-def list_escalations() -> list[dict]:
-    if not ESCALATIONS_PATH.exists():
-        return []
-    with open(ESCALATIONS_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def list_escalations(business_id: UUID) -> list[dict]:
+    with get_session() as session:
+        rows = session.scalars(
+            select(Escalation).where(Escalation.business_id == business_id).order_by(Escalation.timestamp)
+        ).all()
+        return [
+            {
+                "timestamp": row.timestamp.isoformat(),
+                "session_id": str(row.session_id) if row.session_id else None,
+                "reason": row.reason,
+            }
+            for row in rows
+        ]
