@@ -50,7 +50,7 @@ def run_text_mode():
 
 
 def run_voice_mode():
-    from src.mic import record
+    from src.mic import start_recording, stop_recording
     from src.stt import Transcriber
     from src.tts import Speaker
 
@@ -60,10 +60,16 @@ def run_voice_mode():
     transcriber = Transcriber()
     speaker = Speaker()
 
-    print("اردو وائس ایجنٹ تیار ہے۔ بولنا شروع کریں (Ctrl+C سے بند کریں)")
+    # A terminal can't detect a held key without raw-mode input, so this mirrors the
+    # dashboard's hold-to-talk button as press-Enter-to-start / press-Enter-to-stop instead
+    # of VAD-guessed silence - same explicit start/stop model as src/mic.py now uses.
+    print("اردو وائس ایجنٹ تیار ہے۔ (Ctrl+C سے بند کریں)")
     while True:
         try:
-            wav_path = record()
+            input("بولنا شروع کرنے کے لیے Enter دبائیں...")
+            start_recording(business.id)
+            input("بولنا ختم کرنے کے لیے Enter دبائیں...")
+            wav_path = stop_recording()
             user_text = transcriber.transcribe(wav_path, load_settings(business.id)["reply_language"])
             if not user_text:
                 continue

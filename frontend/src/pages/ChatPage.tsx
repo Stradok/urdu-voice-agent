@@ -33,18 +33,30 @@ export default function ChatPage() {
     }
   };
 
-  const handleMic = async () => {
+  const handleMicHoldStart = async () => {
     if (micActive) return;
     setMicActive(true);
     try {
-      const { user_text, reply } = await api.voiceTurn();
+      await api.voiceTurnStart();
+    } catch (e) {
+      setMicActive(false);
+      setMessages((prev) => [...prev, { role: 'assistant', content: t('chat_error_mic') }]);
+    }
+  };
+
+  const handleMicHoldEnd = async () => {
+    if (!micActive) return;
+    setMicActive(false);
+    setLoading(true);
+    try {
+      const { user_text, reply } = await api.voiceTurnStop();
       if (user_text) {
         setMessages((prev) => [...prev, { role: 'user', content: user_text }, { role: 'assistant', content: reply }]);
       }
     } catch (e) {
       setMessages((prev) => [...prev, { role: 'assistant', content: t('chat_error_mic') }]);
     } finally {
-      setMicActive(false);
+      setLoading(false);
     }
   };
 
@@ -91,7 +103,8 @@ export default function ChatPage() {
       <div className="flex-shrink-0 pb-4">
         <RadiantPromptInput
           onSubmit={send}
-          onMicClick={handleMic}
+          onMicHoldStart={handleMicHoldStart}
+          onMicHoldEnd={handleMicHoldEnd}
           micActive={micActive}
           disabled={loading}
           placeholder={t('chat_placeholder')}

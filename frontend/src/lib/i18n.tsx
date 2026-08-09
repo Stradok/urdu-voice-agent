@@ -41,6 +41,7 @@ const dict = {
   guardrails_reply_language: { en: 'Reply Language', ur: 'جواب کی زبان' },
   reply_language_auto: { en: 'Auto (match the customer)', ur: 'خودکار (گاہک کی زبان کے مطابق)' },
   reply_language_urdu: { en: 'Urdu only', ur: 'صرف اردو' },
+  reply_language_roman_urdu: { en: 'Roman Urdu (Urdu in English letters)', ur: 'رومن اردو (انگریزی حروف میں اردو)' },
   reply_language_english: { en: 'English only', ur: 'صرف انگریزی' },
   save: { en: 'Save', ur: 'محفوظ کریں' },
   save_all: { en: 'Save All', ur: 'سب محفوظ کریں' },

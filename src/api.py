@@ -1,3 +1,4 @@
+import threading
 import time
 from uuid import UUID
 
@@ -91,15 +92,30 @@ def chat(payload: ChatMessage, business: BusinessContext = Depends(get_current_b
     return {"reply": reply}
 
 
-@app.post("/voice_turn")
-def voice_turn(business: BusinessContext = Depends(get_current_business)):
-    """Record from the local mic until the user stops talking, transcribe, reply, and
-    speak the reply out loud through the local speakers - same pipeline as CLI voice mode,
-    triggered here by the mic button in the chat page."""
-    from .mic import record
+@app.post("/voice_turn/start")
+def voice_turn_start(business: BusinessContext = Depends(get_current_business)):
+    """Begin recording from the local mic - called on mic-button press-down (hold-to-talk),
+    stopped explicitly by /voice_turn/stop on release rather than guessed via VAD silence."""
+    from .mic import start_recording
+
+    try:
+        start_recording(business.id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "recording"}
+
+
+@app.post("/voice_turn/stop")
+def voice_turn_stop(business: BusinessContext = Depends(get_current_business)):
+    """Stop the in-progress recording, transcribe, reply, and speak the reply out loud
+    through the local speakers - called on mic-button release."""
+    from .mic import stop_recording
 
     t0 = time.monotonic()
-    wav_path = record()
+    try:
+        wav_path = stop_recording()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     t1 = time.monotonic()
     reply_language = app_settings.load_settings(business.id)["reply_language"]
     user_text = _get_transcriber().transcribe(wav_path, reply_language)
@@ -109,17 +125,24 @@ def voice_turn(business: BusinessContext = Depends(get_current_business)):
 
     reply = _get_chat_engine(business).reply(user_text)
     t3 = time.monotonic()
-    try:
-        _get_speaker().say(reply, business.id)
-    except Exception as e:
-        # the text reply already succeeded - a flaky/slow TTS render (e.g. Azure's
-        # real-time-factor watchdog under system load) shouldn't lose the whole turn
-        print(f"TTS playback failed, continuing with text-only reply: {e}")
-    t4 = time.monotonic()
-    print(
-        f"[timing] record={t1 - t0:.2f}s stt={t2 - t1:.2f}s llm={t3 - t2:.2f}s tts={t4 - t3:.2f}s "
-        f"total={t4 - t0:.2f}s"
-    )
+    # recording time itself isn't measured here anymore - it's however long the user held the
+    # button, which happens before this request is even sent, not part of this endpoint's work
+    print(f"[timing] finalize_wav={t1 - t0:.2f}s stt={t2 - t1:.2f}s llm={t3 - t2:.2f}s (speaking in background)")
+
+    def _speak():
+        try:
+            _get_speaker().say(reply, business.id)
+        except Exception as e:
+            # the text reply already succeeded - a flaky/slow TTS render (e.g. Azure's
+            # real-time-factor watchdog under system load) shouldn't lose the whole turn
+            print(f"TTS playback failed, continuing with text-only reply: {e}")
+
+    # Playing the reply out loud can take as long as the reply is long to speak (a multi-item
+    # list can run 10+ seconds) - that used to block this whole response, so the dashboard's
+    # text bubble only appeared after Sara finished talking. Speak in the background instead;
+    # the text reply returns as soon as it's ready, same as how a human agent's screen updates
+    # before they finish saying the sentence out loud.
+    threading.Thread(target=_speak, daemon=True).start()
     return {"user_text": user_text, "reply": reply}
 
 

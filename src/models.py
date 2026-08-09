@@ -74,7 +74,7 @@ class AppSettings(Base):
     reply_language: Mapped[str] = mapped_column(String, nullable=False, default="auto")
     # key into src/llm.py's LLM_CATALOG - which provider+model this business's ChatEngine
     # uses, selectable per-business (see the LLM model dropdown on the Guardrails page).
-    llm_model: Mapped[str] = mapped_column(String, nullable=False, default="groq:llama-3.3-70b-versatile")
+    llm_model: Mapped[str] = mapped_column(String, nullable=False, default="openrouter:google/gemma-4-31b-it")
 
 
 class FaqEntry(Base):

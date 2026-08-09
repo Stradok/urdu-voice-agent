@@ -1,61 +1,93 @@
 import os
 import subprocess
 import tempfile
+import threading
 import wave
-
-import webrtcvad
+from uuid import UUID
 
 from . import settings as app_settings
 from .audio_devices import resolve_capture_device
 
 SAMPLE_RATE = 16000
-FRAME_MS = 30  # webrtcvad only accepts 10/20/30ms frames
-FRAME_BYTES = int(SAMPLE_RATE * (FRAME_MS / 1000.0) * 2)  # 16-bit mono PCM
+CHUNK_BYTES = 4096
+# Hard safety cap in case a client never sends stop (dropped connection, crashed tab) -
+# without this a stuck recording would permanently block the single shared mic slot below.
+MAX_SECONDS = 30.0
 
-MAX_SECONDS = 12.0  # hard cap in case VAD never detects silence
-VAD_AGGRESSIVENESS = 2  # 0 (lenient) - 3 (strict about filtering non-speech)
+
+class _ActiveRecording:
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self.frames: list[bytes] = []
+        self._lock = threading.Lock()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    def _read_loop(self):
+        while True:
+            chunk = self.proc.stdout.read(CHUNK_BYTES)
+            if not chunk:
+                return
+            with self._lock:
+                self.frames.append(chunk)
+
+    def stop(self) -> bytes:
+        self.proc.terminate()
+        self.proc.wait()
+        self._reader.join(timeout=2)
+        with self._lock:
+            return b"".join(self.frames)
 
 
-def record(max_seconds: float = MAX_SECONDS) -> str:
-    """Record from the mic until the speaker goes quiet (VAD-based), return path to a 16kHz mono wav file."""
-    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-    device = resolve_capture_device(app_settings.load_settings()["mic_device"])
-    proc = subprocess.Popen(
-        ["arecord", "-q", "-D", device, "-t", "raw", "-f", "S16_LE", "-r", str(SAMPLE_RATE), "-c", "1"],
-        stdout=subprocess.PIPE,
-    )
+# Single shared mic slot - this is a local desktop app with one physical microphone, so one
+# in-progress recording at a time is the natural model (not a per-business/per-request thing).
+_active: _ActiveRecording | None = None
+_active_lock = threading.Lock()
 
-    silence_tail_ms = app_settings.load_settings()["vad_silence_ms"]
-    frames = []
-    silence_frames_needed = int(silence_tail_ms / FRAME_MS)
-    trailing_silence = 0
-    speech_started = False
-    max_frames = int((max_seconds * 1000) / FRAME_MS)
 
-    try:
-        for _ in range(max_frames):
-            frame = proc.stdout.read(FRAME_BYTES)
-            if len(frame) < FRAME_BYTES:
-                break
-            frames.append(frame)
+def start_recording(business_id: UUID):
+    """Begin capturing from the mic. Call stop_recording() to get the wav back."""
+    global _active
+    with _active_lock:
+        if _active is not None:
+            raise RuntimeError("A recording is already in progress")
+        device = resolve_capture_device(app_settings.load_settings(business_id)["mic_device"])
+        proc = subprocess.Popen(
+            ["arecord", "-q", "-D", device, "-t", "raw", "-f", "S16_LE", "-r", str(SAMPLE_RATE), "-c", "1"],
+            stdout=subprocess.PIPE,
+        )
+        recording = _ActiveRecording(proc)
+        _active = recording
 
-            if vad.is_speech(frame, SAMPLE_RATE):
-                speech_started = True
-                trailing_silence = 0
-            elif speech_started:
-                trailing_silence += 1
-                if trailing_silence >= silence_frames_needed:
-                    break
-    finally:
-        proc.terminate()
-        proc.wait()
+    timer = threading.Timer(MAX_SECONDS, _watchdog_stop, args=(recording,))
+    timer.daemon = True
+    timer.start()
 
+
+def _watchdog_stop(recording: "_ActiveRecording"):
+    global _active
+    with _active_lock:
+        if _active is not recording:
+            return  # already stopped normally
+        _active = None
+    recording.stop()  # discard - nothing is waiting to consume this audio
+
+
+def stop_recording() -> str:
+    """Stop the in-progress recording, return path to a 16kHz mono wav file."""
+    global _active
+    with _active_lock:
+        if _active is None:
+            raise RuntimeError("No recording in progress")
+        recording = _active
+        _active = None
+
+    raw = recording.stop()
     fd, path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(b"".join(frames))
-
+        wf.writeframes(raw)
     return path

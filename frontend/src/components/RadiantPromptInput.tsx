@@ -7,7 +7,8 @@ export interface RadiantPromptInputProps {
   value?: string;
   onChange?: (value: string) => void;
   onSubmit?: (value: string) => void;
-  onMicClick?: () => void;
+  onMicHoldStart?: () => void;
+  onMicHoldEnd?: () => void;
   micActive?: boolean;
   className?: string;
   disabled?: boolean;
@@ -18,7 +19,8 @@ export function RadiantPromptInput({
   value: propValue,
   onChange: propOnChange,
   onSubmit,
-  onMicClick,
+  onMicHoldStart,
+  onMicHoldEnd,
   micActive,
   className,
   disabled,
@@ -114,14 +116,24 @@ export function RadiantPromptInput({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={onMicClick}
+              onMouseDown={onMicHoldStart}
+              onMouseUp={onMicHoldEnd}
+              onMouseLeave={() => micActive && onMicHoldEnd?.()}
+              onTouchStart={(e) => {
+                e.preventDefault();
+                onMicHoldStart?.();
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                onMicHoldEnd?.();
+              }}
               className={cn(
-                'flex items-center justify-center w-10 h-10 rounded-full transition-colors',
+                'flex items-center justify-center w-10 h-10 rounded-full transition-colors select-none',
                 micActive
                   ? 'bg-destructive text-white animate-pulse'
                   : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
               )}
-              aria-label="مائیک استعمال کریں"
+              aria-label="بولنے کے لیے دبائے رکھیں"
             >
               <Mic size={19} strokeWidth={2} />
             </button>

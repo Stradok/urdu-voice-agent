@@ -181,6 +181,7 @@ export default function GuardrailsPage() {
         >
           <option value="auto">{t('reply_language_auto')}</option>
           <option value="urdu">{t('reply_language_urdu')}</option>
+          <option value="roman_urdu">{t('reply_language_roman_urdu')}</option>
           <option value="english">{t('reply_language_english')}</option>
         </select>
       </div>

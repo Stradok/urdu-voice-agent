@@ -14,6 +14,9 @@ from .models import Booking, MenuItem, ServiceItem, StockItem, TableSlot
 # "ایئربڈز" for "earbuds" already match lexically).
 _embedder = None
 _NAME_MATCH_SIMILARITY_THRESHOLD = 0.75
+# How far the top embedding score must clear the runner-up to count as a confident single
+# match rather than an ambiguous one - see _rank_by_embedding for why this exists.
+_CONFIDENT_MARGIN = 0.03
 
 
 def _get_embedder():
@@ -40,9 +43,18 @@ def _normalize(text: str) -> str:
     return "".join(ch for ch in text if not unicodedata.combining(ch))
 
 
+def _rank_by_embedding(query: str, candidates: list[str]) -> list[tuple[str, float]]:
+    embedder = _get_embedder()
+    query_emb = embedder.encode(["query: " + query], normalize_embeddings=True)[0]
+    candidate_embs = embedder.encode(["passage: " + c for c in candidates], normalize_embeddings=True)
+    scores = candidate_embs @ query_emb
+    return sorted(zip(candidates, scores), key=lambda pair: -pair[1])
+
+
 def _best_match(query: str, candidates: list[str]) -> str | None:
-    """Fuzzy-match a spoken/typed name against known item names (handles STT noise, partial
-    names, and Arabic/Urdu letterform variants the LLM may generate)."""
+    """Single confident match only - via exact/lexical matching, or an embedding match that
+    clearly stands out from the rest. Returns None when nothing is confident (either no
+    lexical overlap and no clear embedding winner) - see _closest_matches for that case."""
     if not candidates:
         return None
 
@@ -57,17 +69,36 @@ def _best_match(query: str, candidates: list[str]) -> str | None:
     if close:
         return next(name for name, norm_name in normalized.items() if norm_name == close[0])
 
-    # lexical matching failed - likely a genuine cross-language query (a native-Urdu
-    # phrase against an English-language catalog entry), not just STT noise. Fall back to
-    # multilingual embedding similarity.
-    embedder = _get_embedder()
-    query_emb = embedder.encode(["query: " + query], normalize_embeddings=True)[0]
-    candidate_embs = embedder.encode(["passage: " + c for c in candidates], normalize_embeddings=True)
-    scores = candidate_embs @ query_emb
-    best_idx = int(scores.argmax())
-    if scores[best_idx] < _NAME_MATCH_SIMILARITY_THRESHOLD:
-        return None
-    return candidates[best_idx]
+    # Lexical matching failed - likely a genuine cross-language query (a native-Urdu phrase
+    # against an English catalog entry) or a near-miss mishearing ("kirta" for "Kurta").
+    # Only accept the embedding top pick if it's a clear standout, not just the argmax of a
+    # noisy comparison - see _closest_matches's docstring for why that distinction matters.
+    ranked = _rank_by_embedding(query, candidates)
+    top_name, top_score = ranked[0]
+    runner_up_score = ranked[1][1] if len(ranked) > 1 else -1.0
+    if top_score >= _NAME_MATCH_SIMILARITY_THRESHOLD and top_score - runner_up_score >= _CONFIDENT_MARGIN:
+        return top_name
+    return None
+
+
+def _closest_matches(query: str, candidates: list[str], top_k: int = 5) -> list[str]:
+    """Cross-language/uncertain fallback for when _best_match finds nothing confident -
+    likely a generic category word ("pants") not literally in, or clearly close to, any
+    catalog name. Returns several candidates for the caller to present as options, not a
+    single silent pick.
+
+    Live testing (2026-08-08) showed why a single top-1 pick is unsafe here: for the query
+    "pants" against a 5-item clothing catalog, multilingual-e5-small scored every single
+    item within 0.006 of each other (0.800-0.808) regardless of actual relevance - the
+    correct answer ("Men's Slim Fit Jeans") scored *lower* than an unrelated dress, so
+    picking the argmax silently returned the wrong product with total confidence. Same
+    failure class as the FAQ retrieval top-1 bug (src/faq_store.py) - hand the ambiguity to
+    the LLM instead of resolving it with one noisy float comparison."""
+    if not candidates:
+        return []
+
+    ranked = _rank_by_embedding(query, candidates)
+    return [name for name, score in ranked[:top_k] if score >= _NAME_MATCH_SIMILARITY_THRESHOLD]
 
 
 def check_stock(business_id: UUID, product_name: str | None = None) -> str:
@@ -81,9 +112,17 @@ def check_stock(business_id: UUID, product_name: str | None = None) -> str:
             ]
             return "ہمارے پاس یہ پروڈکٹس دستیاب ہیں: " + "، ".join(lines)
 
-        match_name = _best_match(product_name, [p.name for p in products])
+        all_names = [p.name for p in products]
+        match_name = _best_match(product_name, all_names)
         if match_name is None:
-            return f"'{product_name}' نامی کوئی پروڈکٹ ہمارے پاس نہیں ملا۔"
+            closest = _closest_matches(product_name, all_names)
+            if not closest:
+                return f"'{product_name}' نامی کوئی پروڈکٹ ہمارے پاس نہیں ملا۔"
+            options = "، ".join(
+                f"{p.name} ({p.price} روپے" + (f"، {p.quantity} عدد دستیاب)" if p.quantity > 0 else "، اسٹاک ختم)")
+                for p in products if p.name in closest
+            )
+            return f"'{product_name}' نامی کوئی پروڈکٹ بالکل اسی نام سے ہمارے پاس نہیں، لیکن یہ ملتے جلتے آپشنز ہیں: {options}۔"
 
         product = next(p for p in products if p.name == match_name)
         if product.quantity <= 0:
@@ -94,9 +133,13 @@ def check_stock(business_id: UUID, product_name: str | None = None) -> str:
 def check_appointment_slots(business_id: UUID, service_name: str) -> str:
     with get_session() as session:
         services = session.scalars(select(ServiceItem).where(ServiceItem.business_id == business_id)).all()
-        match_name = _best_match(service_name, [s.name for s in services])
+        all_names = [s.name for s in services]
+        match_name = _best_match(service_name, all_names)
         if match_name is None:
-            return f"'{service_name}' نامی کوئی سروس ہمارے پاس نہیں ملی۔"
+            closest = _closest_matches(service_name, all_names)
+            if not closest:
+                return f"'{service_name}' نامی کوئی سروس ہمارے پاس نہیں ملی۔"
+            return f"'{service_name}' نامی بالکل یہ سروس ہمارے پاس نہیں، لیکن یہ ملتی جلتی سروسز دستیاب ہیں: {'، '.join(closest)}۔"
 
         service = next(s for s in services if s.name == match_name)
         if not service.available_slots:
@@ -110,9 +153,14 @@ def get_menu(business_id: UUID, item_name: str | None = None) -> str:
         items = session.scalars(select(MenuItem).where(MenuItem.business_id == business_id)).all()
 
         if item_name:
-            match_name = _best_match(item_name, [i.name for i in items])
+            all_names = [i.name for i in items]
+            match_name = _best_match(item_name, all_names)
             if match_name is None:
-                return f"'{item_name}' نامی کوئی ڈش مینو میں نہیں ملی۔"
+                closest = _closest_matches(item_name, all_names)
+                if not closest:
+                    return f"'{item_name}' نامی کوئی ڈش مینو میں نہیں ملی۔"
+                options = "، ".join(f"{i.name} ({i.price} روپے)" for i in items if i.name in closest)
+                return f"'{item_name}' نامی بالکل یہ ڈش مینو میں نہیں، لیکن یہ ملتی جلتی ڈشز دستیاب ہیں: {options}۔"
             item = next(i for i in items if i.name == match_name)
             return f"{item.name} - {item.price} روپے۔ {item.description}۔"
 

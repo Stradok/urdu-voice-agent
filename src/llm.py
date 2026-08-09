@@ -47,7 +47,7 @@ LLM_CATALOG = {
         "label": "Gemini 3.5 Flash", "note": "Not recommended as configured: best published Urdu accuracy, but got cut off mid-reply in our own tests (too verbose for max_tokens=300), also slowest and priciest",
     },
 }
-DEFAULT_LLM_MODEL = "groq:llama-3.3-70b-versatile"
+DEFAULT_LLM_MODEL = "openrouter:google/gemma-4-31b-it"
 
 _provider_clients: dict[str, object] = {}
 
@@ -71,12 +71,21 @@ def _get_client(provider: str):
 # message) so it takes priority over the earlier, more general persona guardrails.
 LANGUAGE_MODE_INSTRUCTIONS = {
     "auto": (
-        "زبان کا اصول: صارف جس زبان میں بات کرے (اردو یا انگریزی)، اسی زبان میں جواب دیں۔ "
-        "اگر صارف انگریزی میں بات کرے تو مکمل طور پر رواں انگریزی میں جواب دیں، اردو رسم الخط استعمال نہ کریں۔ "
+        "زبان کا اصول: صارف کے پیغام کی زبان کی تین ممکنہ صورتیں ہیں - براہِ کرم انہیں الگ الگ پہچانیں: "
+        "(1) اگر صارف اردو رسم الخط میں لکھے (جیسے 'کیا حال ہے')، تو اردو رسم الخط میں جواب دیں۔ "
+        "(2) اگر صارف رومن اردو میں لکھے، یعنی اردو زبان مگر انگریزی حروف میں (جیسے 'kya hal hai', 'mujha kapre kharedna hn')، "
+        "تو جواب بھی رومن اردو ہی میں دیں - اسے انگریزی سمجھ کر انگریزی میں جواب نہ دیں، اور نہ ہی اردو رسم الخط میں بدلیں۔ "
+        "(3) اگر صارف حقیقتاً انگریزی زبان میں لکھے (جیسے 'do you have earbuds?')، تو مکمل رواں انگریزی میں جواب دیں۔ "
         "یہ ہدایت اوپر دی گئی 'ہمیشہ صرف اردو میں لکھیں' کی پابندی پر فوقیت رکھتی ہے۔"
     ),
     "english": (
         "زبان کا اصول: صارف چاہے کسی بھی زبان میں بات کرے، آپ نے ہمیشہ صرف رواں انگریزی میں جواب دینا ہے۔ "
+        "یہ ہدایت اوپر دی گئی 'ہمیشہ صرف اردو میں لکھیں' کی پابندی پر فوقیت رکھتی ہے۔"
+    ),
+    "roman_urdu": (
+        "زبان کا اصول: صارف چاہے اردو رسم الخط میں لکھے، رومن اردو میں لکھے، یا انگریزی میں لکھے، آپ نے ہمیشہ "
+        "رومن اردو میں جواب دینا ہے - یعنی اردو زبان، مگر انگریزی حروف میں (جیسے 'ji bilkul, kya madad kar sakti hun'). "
+        "کبھی بھی اردو رسم الخط استعمال نہ کریں اور نہ ہی مکمل انگریزی میں جواب دیں۔ "
         "یہ ہدایت اوپر دی گئی 'ہمیشہ صرف اردو میں لکھیں' کی پابندی پر فوقیت رکھتی ہے۔"
     ),
     "urdu": None,  # matches the persona's existing default guardrail — no override needed

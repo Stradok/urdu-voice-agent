@@ -120,7 +120,8 @@ export const api = {
   whoami: () => request<WhoAmI>('/whoami'),
 
   chat: (message: string) => request<{ reply: string }>('/chat', { method: 'POST', body: JSON.stringify({ message }) }),
-  voiceTurn: () => request<{ user_text: string; reply: string }>('/voice_turn', { method: 'POST' }),
+  voiceTurnStart: () => request<{ status: string }>('/voice_turn/start', { method: 'POST' }),
+  voiceTurnStop: () => request<{ user_text: string; reply: string }>('/voice_turn/stop', { method: 'POST' }),
 
   getPersona: () => request<PersonaConfig>('/config/persona'),
   savePersona: (config: PersonaConfig) => request<PersonaConfig>('/config/persona', { method: 'PUT', body: JSON.stringify(config) }),

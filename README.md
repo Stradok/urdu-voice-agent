@@ -8,6 +8,8 @@ The project has two parts today:
 
 A standalone CLI (`main.py`) also still works if you just want to talk to the agent from a terminal without the frontend — it has no login and always talks to one hardcoded business (`DEFAULT_BUSINESS_SLUG`, see `src/business_context.py`).
 
+> **Current market focus (2026-08-08): dental clinics and banks, not retail.** Live testing found every real correctness bug in the retail stock-matching path (fuzzy-matching a spoken product name against an open-ended catalog is genuinely harder than a clinic's one bounded action or a bank's deliberately narrow "always escalate to a human" scope). The dental-clinic and bank test accounts are the actively pitched/demoed reference customers; the retail accounts below still work and stay in the codebase, just deprioritized until a later focused push. See `plan.md`'s Executive Summary for the full reasoning.
+>
 > **Where this is headed**: the database (Supabase Postgres, `business_id`-scoped throughout) and dashboard login (Supabase Auth) are both live — see **[`plan.md`](./plan.md)** Phase 0 §1/§2/§4 for exactly what shipped and when. Four real test accounts across different verticals (dental clinic, retail store, clothing brand, bank) exist to exercise this: each only sees its own data and its own subset of tools, and each was seeded with persona/guardrails/FAQ written in English on purpose, to prove the agent still replies in whichever language the *customer* uses. Still ahead: per-business Groq/Azure credentials (today all businesses share one backend API key — plan.md §3), and the customer-facing web widget/anonymous auth (§5), which is what a real non-technical customer would actually talk to instead of this desktop app.
 
 ## Architecture
@@ -15,42 +17,53 @@ A standalone CLI (`main.py`) also still works if you just want to talk to the ag
 ### Pipeline overview
 
 ```
-🎤 Mic input (voice mode) / 💬 typed text (chat mode)
+🎤 Mic input (voice mode, hold-to-talk) / 💬 typed text (chat mode)
         │
         ▼
   ① Audio capture   records via `arecord` (auto-picks a USB mic over an
-        │           unplugged analog jack — see src/audio_devices.py)
+        │           unplugged analog jack — see src/audio_devices.py) for
+        │           as long as the mic button is held; button release is
+        │           the stop signal, not a silence timeout
         ▼
-  ② VAD             webrtcvad detects when the speaker stops talking, so
-        │           recording ends on silence instead of a fixed duration
+  ② STT             Groq's hosted whisper-large-v3-turbo transcribes the
+        │           .wav to text — handles Urdu/English code-switching
+        │           ("kya apka paas class 10 hai") far better than the
+        │           small local model this replaced, and needs no GPU
         ▼
-  ③ STT             faster-whisper ("small" model, language="ur", GPU)
-        │           transcribes the .wav to Urdu text
-        ▼
-  ④ Retrieval       embeds the question (multilingual-e5-small) and searches
+  ③ Retrieval       embeds the question (multilingual-e5-small) and searches
         │  (FAQ)     pgvector-indexed FAQ entries in Postgres for the closest
-        │           match. Close enough (cosine distance ≤ 0.22) → passed to
-        │           the LLM as grounding context.
+        │           matches (top 3, not just the single closest - two FAQs can
+        │           sit within noise distance of each other). Close enough
+        │           (cosine distance ≤ 0.22) → passed to the LLM as grounding
+        │           context, each labeled with its own question so the model
+        │           can judge which one actually answers what was asked.
         ▼
-  ⑤ LLM             sends system prompt (src/persona.py, editable from the
+  ④ LLM             sends system prompt (src/persona.py, editable from the
         │           Guardrails page) + tone-matched few-shot examples (picked
         │           by embedding similarity) + FAQ context + recent history +
-        │           the message to Groq's llama-3.3-70b-versatile, with
-        │           tool-calling enabled for stock/appointment/menu/booking
-        │           lookups and human-escalation (⑥). Any Groq error (rate
-        │           limit, malformed tool call) degrades to a graceful Urdu
-        │           fallback message instead of crashing.
+        │           the message to that business's chosen model (per-business
+        │           AppSettings.llm_model, src/llm.py's LLM_CATALOG - Groq or
+        │           OpenRouter), with tool-calling enabled for stock/
+        │           appointment/menu/booking lookups and human-escalation (⑤).
+        │           Any provider error (rate limit, malformed tool call)
+        │           degrades to a graceful Urdu fallback message instead of
+        │           crashing.
         ▼
-  ⑥ Tools           if the LLM calls a tool, src/tools.py looks up (or
+  ⑤ Tools           if the LLM calls a tool, src/tools.py looks up (or
         │  (live data) updates) real stock/appointment/menu/booking data and
         │           the result is fed back for a final natural-language reply
         ▼
-  ⑦ TTS             (voice mode only) sends the reply as SSML to Azure Speech
-        │           (voice: ur-PK-UzmaNeural), retries once on transient
-        │           synthesis failures
+  ⑥ Response        (both modes) the text reply returns to the caller
+        │           immediately - voice mode does not wait for ⑦/⑧ below
+        ▼
+  ⑦ TTS             (voice mode only, background thread) sends the reply as
+        │           SSML to Azure Speech (voice: ur-PK-UzmaNeural), retries
+        │           once on transient synthesis failures
         ▼
   ⑧ Playback        plays the synthesized audio via `aplay` through the
-        │           selected output device
+        │           selected output device, after the text reply already
+        │           returned (so a long spoken reply no longer delays the
+        │           on-screen text)
         ▼
 🔊 Spoken reply (voice mode) / printed or on-screen reply (text/chat mode)
 ```
@@ -59,16 +72,15 @@ A standalone CLI (`main.py`) also still works if you just want to talk to the ag
 
 | # | Stage | Purpose | Technology | Cost | Code |
 |---|---|---|---|---|---|
-| ① | Audio capture | Record the caller's voice | `arecord` (ALSA), auto USB-device detection | Free, local | `src/mic.py`, `src/audio_devices.py` |
-| ② | VAD (endpointing) | Detect when the speaker stops talking, so recording doesn't wait for a fixed duration | `webrtcvad` (Google's WebRTC VAD engine, via `webrtcvad-wheels`) | Free, open source | `src/mic.py` |
-| ③ | STT (transcription) | Convert recorded Urdu speech to text | `faster-whisper` ("small" model, `language="ur"`, self-hosted) | Free, self-hosted — needs a local GPU | `src/stt.py` |
-| ④ | Retrieval (FAQ grounding) | Find the closest matching FAQ answer to ground the reply in real facts | `sentence-transformers` (`intfloat/multilingual-e5-small`) + Postgres `pgvector` search | Free, open source (Supabase free tier for the DB) | `src/faq_store.py` |
-| ⑤ | LLM (reasoning + reply) | Generate the natural-language Urdu reply; decide when a tool call is needed | Per-business choice via a dropdown (`src/llm.py`'s `LLM_CATALOG`) — Groq `llama-3.3-70b-versatile` by default, or Gemini 3.5 Flash / Gemini 3.5 Flash Lite / DeepSeek V4 Flash / Gemma 4 31B / Claude Haiku 4.5 via OpenRouter | Groq free tier: 100k tokens/day. OpenRouter models are pay-as-you-go, from ~$0.14/M tokens (DeepSeek) to ~$1.50-9/M (Gemini 3.5 Flash) — see `plan.md`'s "Open issue" section for the full cost/quality comparison | `src/llm.py` |
-| ⑥ | Tools (live data) | Look up/update real stock, appointments, menu, bookings; escalate sensitive cases to a human | Custom Python functions + Groq function-calling | Free, self-hosted | `src/tools.py` |
-| ⑦ | TTS (speech synthesis) | Convert the reply back into natural-sounding spoken Urdu | Azure Speech, `ur-PK-UzmaNeural` neural voice, SSML | **Free tier (F0): 500,000 characters/month (~10 hours of audio), renews monthly, never expires.** Beyond that: throttled on F0, or ~$16/million characters on the paid S0 tier | `src/tts.py` |
-| ⑧ | Audio playback | Play the synthesized reply out loud | `aplay` (ALSA) | Free, local | `src/tts.py` |
+| ① | Audio capture | Record the caller's voice for as long as the mic button is held (hold-to-talk, not VAD-guessed) | `arecord` (ALSA), auto USB-device detection | Free, local | `src/mic.py`, `src/audio_devices.py` |
+| ② | STT (transcription) | Convert recorded speech to text, including Urdu/English code-switching | Groq hosted `whisper-large-v3-turbo` | Groq free tier: 100k tokens/day (shared with the LLM stage's quota, see `plan.md` §3) | `src/stt.py` |
+| ③ | Retrieval (FAQ grounding) | Find the closest matching FAQ answer to ground the reply in real facts | `sentence-transformers` (`intfloat/multilingual-e5-small`) + Postgres `pgvector` search | Free, open source (Supabase free tier for the DB) | `src/faq_store.py` |
+| ④ | LLM (reasoning + reply) | Generate the natural-language Urdu reply; decide when a tool call is needed | Per-business choice via a dropdown (`src/llm.py`'s `LLM_CATALOG`) — Gemma 4 31B via OpenRouter by default (recommended after real eval testing, see `plan.md`), or Gemini 3.5 Flash / Gemini 3.5 Flash Lite / DeepSeek V4 Flash / Claude Haiku 4.5 via OpenRouter, or Groq `llama-3.3-70b-versatile` | OpenRouter models are pay-as-you-go, from ~$0/M (Gemma 4's free-tier variant) to ~$1.50-9/M (Gemini 3.5 Flash). Groq free tier: 100k tokens/day — see `plan.md`'s "Open issue" section for the full cost/quality comparison | `src/llm.py` |
+| ⑤ | Tools (live data) | Look up/update real stock, appointments, menu, bookings; escalate sensitive cases to a human | Custom Python functions + function-calling | Free, self-hosted | `src/tools.py` |
+| ⑥ | TTS (speech synthesis) | Convert the reply back into natural-sounding spoken Urdu, in a background thread so it doesn't delay the text reply | Azure Speech, `ur-PK-UzmaNeural` neural voice, SSML | **Free tier (F0): 500,000 characters/month (~10 hours of audio), renews monthly, never expires.** Beyond that: throttled on F0, or ~$16/million characters on the paid S0 tier | `src/tts.py` |
+| ⑦ | Audio playback | Play the synthesized reply out loud | `aplay` (ALSA) | Free, local | `src/tts.py` |
 
-Every stage that costs money (STT is self-hosted/free today, but see `plan.md` for a planned move to Groq's hosted Whisper API — also inexpensive) runs on a provider with a genuine free tier, which is why this project can be developed and even piloted with real customers at close to zero infrastructure cost. See `plan.md` for how this evolves for a hosted, multi-tenant deployment (the local-hardware-bound stages — mic capture and playback — specifically don't carry over to a hosted product and are replaced there).
+Every stage runs on a provider with a genuine free tier, which is why this project can be developed and even piloted with real customers at close to zero infrastructure cost. See `plan.md` for how this evolves for a hosted, multi-tenant deployment (the local-hardware-bound stages — mic capture and playback — specifically don't carry over to a hosted product and are replaced there).
 
 ### Database schema (Postgres / Supabase)
 
@@ -265,9 +277,9 @@ curl -s -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
 |---|---|
 | `main.py` | Standalone CLI entry point (text or voice loop), independent of the FastAPI/Electron app |
 | `src/api.py` | FastAPI app — chat/voice endpoints, and CRUD endpoints backing every admin page |
-| `src/mic.py` | Records audio from the mic, auto-picks a USB device over an unplugged analog jack, VAD-based stop |
+| `src/mic.py` | Records audio from the mic, auto-picks a USB device over an unplugged analog jack, explicit hold-to-talk `start_recording()`/`stop_recording()` |
 | `src/audio_devices.py` | Lists/resolves ALSA capture & playback devices |
-| `src/stt.py` | Speech-to-text (faster-whisper, Urdu, GPU) |
+| `src/stt.py` | Speech-to-text (Groq hosted `whisper-large-v3-turbo`, no local GPU needed) |
 | `src/llm.py` | `ChatEngine` — talks to whichever LLM the business selected (`LLM_CATALOG`: Groq or an OpenRouter model, re-read per turn from settings), picks relevant few-shot examples, handles tool-calling, manages history (in-memory + persisted to Postgres), degrades gracefully on provider errors |
 | `src/persona.py` | Loads/saves persona config + example bank (Postgres, `business_id`-scoped), builds the system prompt |
 | `src/settings.py` | Loads/saves tunable runtime settings (Postgres for LLM temp/TTS rate/VAD/reply language; `mic_device`/`speaker_device` stay in a local file) |
