@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, ForeignKey, Numeric, String, Text
+from sqlalchemy import ARRAY, Date, ForeignKey, Numeric, String, Text, Time, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -75,6 +75,14 @@ class AppSettings(Base):
     # key into src/llm.py's LLM_CATALOG - which provider+model this business's ChatEngine
     # uses, selectable per-business (see the LLM model dropdown on the Guardrails page).
     llm_model: Mapped[str] = mapped_column(String, nullable=False, default="openrouter:google/gemma-4-31b-it")
+    # appointment-scheduling settings (src/scheduling.py) - the grid granularity slots are
+    # generated at, the IANA timezone all "today"/"tomorrow" reasoning is anchored to (never
+    # bare server-local time - see the Sunday-booking bug this was added to fix), and a
+    # rolling-window watermark so ensure_slots_generated() is a cheap no-op after the first
+    # call each day instead of re-scanning for gaps.
+    slot_duration_minutes: Mapped[int] = mapped_column(nullable=False, default=30)
+    timezone: Mapped[str] = mapped_column(String, nullable=False, default="Asia/Karachi")
+    slots_generated_until: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class FaqEntry(Base):
@@ -104,7 +112,72 @@ class ServiceItem(Base):
     business_id: Mapped[uuid.UUID] = _business_fk()
     name: Mapped[str] = mapped_column(String, nullable=False)
     duration_minutes: Mapped[int] = mapped_column(nullable=False)
+    # Superseded by AppointmentSlot (generated from BusinessHours) - kept as an unused
+    # column for now rather than dropped immediately, so the migration that removes it is
+    # a separate, cleanly revertible step once the new system is verified live.
     available_slots: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+
+
+class BusinessHours(Base):
+    """Always exactly 7 rows per business (one per weekday) - a missing row is a distinct,
+    detectable 'hours never configured' state, not silently misread as closed. Weekday
+    follows Python's date.weekday() convention: 0=Monday...6=Sunday (NOT isoweekday())."""
+
+    __tablename__ = "business_hours"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    business_id: Mapped[uuid.UUID] = _business_fk()
+    weekday: Mapped[int] = mapped_column(nullable=False)
+    is_closed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    open_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    close_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+
+    __table_args__ = (UniqueConstraint("business_id", "weekday"),)
+
+
+class Appointment(Base):
+    """A real, persisted booking - src/tools.py's book_appointment is the only writer.
+    service_name/duration_minutes are snapshotted at booking time so a later service
+    rename/delete doesn't retroactively change historical appointment records."""
+
+    __tablename__ = "appointments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    business_id: Mapped[uuid.UUID] = _business_fk()
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    service_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_items.id", ondelete="SET NULL"), nullable=True
+    )
+    service_name: Mapped[str] = mapped_column(String, nullable=False)
+    customer_name: Mapped[str] = mapped_column(String, nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(nullable=False)
+    reference_code: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("business_id", "reference_code"),)
+
+
+class AppointmentSlot(Base):
+    """The generated, bookable grid - src/scheduling.py's ensure_slots_generated() is the
+    only writer of new rows (from BusinessHours + AppSettings.slot_duration_minutes), and
+    book_appointment is the only writer of status="booked". starts_at is a naive wall-clock
+    datetime in the business's own AppSettings.timezone, not UTC - always resolve "now"
+    through scheduling.now_local(), never bare datetime.now()."""
+
+    __tablename__ = "appointment_slots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    business_id: Mapped[uuid.UUID] = _business_fk()
+    starts_at: Mapped[datetime] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="open")  # "open" | "booked"
+    appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (UniqueConstraint("business_id", "starts_at"),)
 
 
 class MenuItem(Base):
@@ -171,3 +244,6 @@ class Escalation(Base):
     )
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(server_default=func.now())
+    reference_code: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (UniqueConstraint("business_id", "reference_code"),)

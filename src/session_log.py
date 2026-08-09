@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from .db import get_session
 from .models import Escalation, Exchange, Session
+from .reference_codes import create_with_reference_code
 
 
 def start_session(business_id: UUID, channel: str = "dashboard") -> UUID:
@@ -20,9 +21,14 @@ def log_exchange(session_id: UUID, user_text: str, reply_text: str):
         session.add(Exchange(session_id=session_id, user_text=user_text, assistant_text=reply_text))
 
 
-def log_escalation(business_id: UUID, session_id: UUID | None, reason: str):
+def log_escalation(business_id: UUID, session_id: UUID | None, reason: str) -> str:
+    """Returns the generated reference code, for the caller to read back to the customer
+    (e.g. recommend_human_agent's "your ticket number is...")."""
     with get_session() as session:
-        session.add(Escalation(business_id=business_id, session_id=session_id, reason=reason))
+        row = create_with_reference_code(
+            session, Escalation, "escalation", business_id=business_id, session_id=session_id, reason=reason
+        )
+        return row.reference_code
 
 
 def list_sessions(business_id: UUID) -> list[dict]:
@@ -60,6 +66,7 @@ def list_escalations(business_id: UUID) -> list[dict]:
                 "timestamp": row.timestamp.isoformat(),
                 "session_id": str(row.session_id) if row.session_id else None,
                 "reason": row.reason,
+                "reference_code": row.reference_code,
             }
             for row in rows
         ]

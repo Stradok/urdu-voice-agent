@@ -1,11 +1,26 @@
 import difflib
+import math
 import unicodedata
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 
+from . import scheduling
 from .db import get_session
-from .models import Booking, MenuItem, ServiceItem, StockItem, TableSlot
+from .models import Appointment, AppointmentSlot, AppSettings, Booking, MenuItem, ServiceItem, StockItem, TableSlot
+from .reference_codes import create_with_reference_code
+
+# Weekday names for slot display - date.weekday() convention (0=Monday..6=Sunday), matching
+# BusinessHours. Digits for day/month rather than Urdu month names, to stay unambiguous
+# when read aloud and easy for the model to copy back verbatim in book_appointment.
+_WEEKDAY_UR = ["پیر", "منگل", "بدھ", "جمعرات", "جمعہ", "ہفتہ", "اتوار"]
+_SLOT_FORMAT = "%Y-%m-%d %H:%M"
+
+
+def _format_slot(dt: datetime) -> str:
+    label = f"{_WEEKDAY_UR[dt.weekday()]} {dt.day:02d}/{dt.month:02d} {dt.hour:02d}:{dt.minute:02d}"
+    return f"{label} ({dt.strftime(_SLOT_FORMAT)})"
 
 # Cross-language name matching: a business may catalog its products/services in English
 # (e.g. "Teeth Cleaning") while a customer asks in native Urdu ("دانتوں کی صفائی") - no
@@ -130,22 +145,102 @@ def check_stock(business_id: UUID, product_name: str | None = None) -> str:
         return f"{product.name} دستیاب ہے۔ قیمت: {product.price} روپے، اسٹاک میں {product.quantity} عدد باقی ہیں۔"
 
 
+def _resolve_service(session, business_id: UUID, service_name: str) -> tuple[ServiceItem | None, str | None]:
+    """Shared by check_appointment_slots and book_appointment - resolve a spoken/typed
+    service name, or return an error string (already includes closest-match suggestions)."""
+    services = session.scalars(select(ServiceItem).where(ServiceItem.business_id == business_id)).all()
+    all_names = [s.name for s in services]
+    match_name = _best_match(service_name, all_names)
+    if match_name is not None:
+        return next(s for s in services if s.name == match_name), None
+
+    closest = _closest_matches(service_name, all_names)
+    if not closest:
+        return None, f"'{service_name}' نامی کوئی سروس ہمارے پاس نہیں ملی۔"
+    return None, f"'{service_name}' نامی بالکل یہ سروس ہمارے پاس نہیں، لیکن یہ ملتی جلتی سروسز دستیاب ہیں: {'، '.join(closest)}۔"
+
+
 def check_appointment_slots(business_id: UUID, service_name: str) -> str:
     with get_session() as session:
-        services = session.scalars(select(ServiceItem).where(ServiceItem.business_id == business_id)).all()
-        all_names = [s.name for s in services]
-        match_name = _best_match(service_name, all_names)
-        if match_name is None:
-            closest = _closest_matches(service_name, all_names)
-            if not closest:
-                return f"'{service_name}' نامی کوئی سروس ہمارے پاس نہیں ملی۔"
-            return f"'{service_name}' نامی بالکل یہ سروس ہمارے پاس نہیں، لیکن یہ ملتی جلتی سروسز دستیاب ہیں: {'، '.join(closest)}۔"
+        service, error = _resolve_service(session, business_id, service_name)
+        if error:
+            return error
 
-        service = next(s for s in services if s.name == match_name)
-        if not service.available_slots:
+        settings = session.get(AppSettings, business_id)
+        scheduling.ensure_slots_generated(session, business_id)
+        starts = scheduling.find_available_starts(
+            session, business_id, service.duration_minutes, settings.slot_duration_minutes,
+            after=scheduling.now_local(settings.timezone), limit=6,
+        )
+        if not starts:
             return f"{service.name} کے لیے فی الحال کوئی خالی وقت دستیاب نہیں ہے۔"
-        slots = "، ".join(service.available_slots)
-        return f"{service.name} ({service.duration_minutes} منٹ) کے لیے دستیاب اوقات: {slots}"
+        options = "، ".join(_format_slot(dt) for dt in starts)
+        return (
+            f"{service.name} ({service.duration_minutes} منٹ) کے لیے دستیاب اوقات: {options} — "
+            "بکنگ کرتے وقت قوسین () میں دیا گیا حصہ بالکل ویسے ہی استعمال کریں۔"
+        )
+
+
+def book_appointment(
+    business_id: UUID, session_id: UUID | None, service_name: str, slot_start: str, customer_name: str
+) -> str:
+    with get_session() as session:
+        service, error = _resolve_service(session, business_id, service_name)
+        if error:
+            return error
+
+        try:
+            requested_start = datetime.strptime(slot_start.strip(), _SLOT_FORMAT)
+        except ValueError:
+            return "دیا گیا وقت سمجھ میں نہیں آیا۔ پہلے check_appointment_slots سے دستیاب اوقات دوبارہ چیک کریں اور بالکل وہی فارمیٹ استعمال کریں۔"
+
+        settings = session.get(AppSettings, business_id)
+        scheduling.ensure_slots_generated(session, business_id)
+
+        needed = max(1, math.ceil(service.duration_minutes / settings.slot_duration_minutes))
+        step = timedelta(minutes=settings.slot_duration_minutes)
+        # Row-lock the exact candidate slots before validating, so a concurrent booking
+        # attempt against the same time can't also claim them before this commits.
+        candidate_rows = session.scalars(
+            select(AppointmentSlot)
+            .where(
+                AppointmentSlot.business_id == business_id,
+                AppointmentSlot.starts_at >= requested_start,
+                AppointmentSlot.starts_at < requested_start + step * needed,
+            )
+            .order_by(AppointmentSlot.starts_at)
+            .with_for_update()
+        ).all()
+
+        valid = (
+            len(candidate_rows) == needed
+            and candidate_rows[0].starts_at == requested_start
+            and all(r.status == "open" for r in candidate_rows)
+            and all(candidate_rows[i + 1].starts_at - candidate_rows[i].starts_at == step for i in range(needed - 1))
+            and requested_start >= scheduling.now_local(settings.timezone)
+        )
+        if not valid:
+            alternatives = scheduling.find_available_starts(
+                session, business_id, service.duration_minutes, settings.slot_duration_minutes,
+                after=scheduling.now_local(settings.timezone), limit=5,
+            )
+            options = "، ".join(_format_slot(dt) for dt in alternatives) or "کوئی وقت دستیاب نہیں"
+            return f"معذرت، یہ وقت اب دستیاب نہیں۔ دستیاب اوقات: {options}"
+
+        appointment = create_with_reference_code(
+            session, Appointment, "appointment",
+            business_id=business_id, session_id=session_id, service_id=service.id,
+            service_name=service.name, customer_name=customer_name,
+            starts_at=requested_start, duration_minutes=service.duration_minutes,
+        )
+        for row in candidate_rows:
+            row.status = "booked"
+            row.appointment_id = appointment.id
+
+    return (
+        f"اپائنٹمنٹ کنفرم ہو گئی: {customer_name}، {service.name}، {_format_slot(requested_start)}۔ "
+        f"ریفرنس کوڈ: {appointment.reference_code} — یہ کوڈ کسٹمر کو ایک ایک عدد کر کے صاف پڑھ کر سنائیں۔"
+    )
 
 
 def get_menu(business_id: UUID, item_name: str | None = None) -> str:
@@ -173,16 +268,17 @@ def get_menu(business_id: UUID, item_name: str | None = None) -> str:
 def recommend_human_agent(business_id: UUID, session_id: UUID, reason: str) -> str:
     from . import session_log
 
-    session_log.log_escalation(business_id, session_id, reason)
+    code = session_log.log_escalation(business_id, session_id, reason)
     # Deliberately not a ready-made customer-facing sentence: an earlier version returned
     # one, and the model just echoed it verbatim instead of composing a reply from its own
     # persona/tone rules - dropping any empathy the persona's guardrails call for (e.g. a
     # patient in pain). This is status/meta content for the model to react to, not a script.
     return (
-        "Escalation logged; a human team member has been notified and will follow up soon. "
-        "Now write the reply to the customer yourself, in their language and your usual tone - "
-        "acknowledge what they told you with genuine empathy before mentioning that a team "
-        "member will follow up."
+        f"Escalation logged (ticket number: {code}); a human team member has been notified "
+        "and will follow up soon. Now write the reply to the customer yourself, in their "
+        "language and your usual tone - acknowledge what they told you with genuine empathy, "
+        "clearly read back the ticket number one digit at a time so it's unambiguous, then "
+        "mention that a team member will follow up."
     )
 
 
@@ -203,12 +299,14 @@ def book_table(business_id: UUID, date_time: str, party_size: int | str) -> str:
     return f"آپ کی میز {date_time} کے لیے {party_size} افراد کے لیے بک ہو گئی ہے۔"
 
 
-# Tool functions all take business_id (and recommend_human_agent additionally takes
-# session_id) as their first argument(s) - bound by ChatEngine at the call site, never
+# Tool functions all take business_id (and recommend_human_agent/book_appointment
+# additionally take session_id, for escalation/appointment traceability back to the
+# conversation) as their first argument(s) - bound by ChatEngine at the call site, never
 # exposed to the LLM or listed in TOOL_SCHEMAS below.
 TOOLS_BY_NAME = {
     "check_stock": check_stock,
     "check_appointment_slots": check_appointment_slots,
+    "book_appointment": book_appointment,
     "get_menu": get_menu,
     "book_table": book_table,
     "recommend_human_agent": recommend_human_agent,
@@ -240,6 +338,25 @@ TOOL_SCHEMAS = [
                     "service_name": {"type": "string", "description": "سروس کا نام جیسا صارف نے بتایا"},
                 },
                 "required": ["service_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_appointment",
+            "description": "اپائنٹمنٹ کنفرم/بک کریں۔ صرف اسی وقت پر بک کریں جو check_appointment_slots نے واقعی دکھایا ہو - وقت کبھی اندازے سے نہ لکھیں۔",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {"type": "string", "description": "سروس کا نام جیسا صارف نے بتایا"},
+                    "slot_start": {
+                        "type": "string",
+                        "description": "check_appointment_slots کے نتیجے میں قوسین () کے اندر دیا گیا وقت، بالکل اسی فارمیٹ میں (مثلاً '2026-08-11 10:00')",
+                    },
+                    "customer_name": {"type": "string", "description": "کسٹمر کا نام"},
+                },
+                "required": ["service_name", "slot_start", "customer_name"],
             },
         },
     },
@@ -303,7 +420,7 @@ TOOL_SCHEMAS = [
 # stays useful for regression testing - real businesses always get a narrower type.
 BUSINESS_TYPE_TOOLS = {
     "demo": list(TOOLS_BY_NAME),
-    "dentist_clinic": ["check_appointment_slots", "recommend_human_agent"],
+    "dentist_clinic": ["check_appointment_slots", "book_appointment", "recommend_human_agent"],
     "retail_store": ["check_stock", "recommend_human_agent"],
     "clothing_brand": ["check_stock", "recommend_human_agent"],
     "restaurant": ["get_menu", "book_table", "recommend_human_agent"],

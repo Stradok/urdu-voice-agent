@@ -56,6 +56,15 @@ export default function App() {
       .finally(() => setCheckingAuth(false));
   }, [backendReady]);
 
+  useEffect(() => {
+    // Fired by api.ts's request() on any 401/403, from whatever page happened to be
+    // mounted when the token expired - drops straight back to the login screen instead of
+    // leaving that page silently failing every subsequent request.
+    const onAuthExpired = () => setBusiness(null);
+    window.addEventListener('sara:auth-expired', onAuthExpired);
+    return () => window.removeEventListener('sara:auth-expired', onAuthExpired);
+  }, []);
+
   if (!backendReady || checkingAuth) {
     return <LoadingScreen label={t('loading_label')} />;
   }

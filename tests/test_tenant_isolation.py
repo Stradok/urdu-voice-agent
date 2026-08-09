@@ -49,8 +49,14 @@ def two_businesses():
             Exchange(session_id=dentist_session.id, user_text="Book a cleaning", assistant_text="Sure."),
         ])
         db.add_all([
-            Escalation(business_id=shoe_store.id, session_id=shoe_session.id, reason="angry customer"),
-            Escalation(business_id=dentist.id, session_id=dentist_session.id, reason="medical concern"),
+            Escalation(
+                business_id=shoe_store.id, session_id=shoe_session.id, reason="angry customer",
+                reference_code="ES-00001",
+            ),
+            Escalation(
+                business_id=dentist.id, session_id=dentist_session.id, reason="medical concern",
+                reference_code="ES-00001",  # different business, so this doesn't collide with the row above
+            ),
         ])
 
         shoe_store_id, dentist_id = shoe_store.id, dentist.id

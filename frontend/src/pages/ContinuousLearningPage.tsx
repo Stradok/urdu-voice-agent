@@ -90,7 +90,10 @@ export default function ContinuousLearningPage() {
           {escalations.length === 0 && <p className="text-sm text-muted-foreground">{t('learning_no_escalations')}</p>}
           {escalations.map((esc, i) => (
             <div key={i} className="bg-card/50 border border-destructive/30 rounded-lg p-3 space-y-1">
-              <p className="text-xs text-muted-foreground">{new Date(esc.timestamp).toLocaleString(lang === 'en' ? 'en-US' : 'ur-PK')}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">{new Date(esc.timestamp).toLocaleString(lang === 'en' ? 'en-US' : 'ur-PK')}</p>
+                <span className="font-mono text-xs text-muted-foreground">{esc.reference_code}</span>
+              </div>
               <p dir="rtl" className="text-sm">
                 {esc.reason}
               </p>

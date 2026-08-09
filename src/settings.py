@@ -39,6 +39,7 @@ def load_settings(business_id: UUID) -> dict:
             "vad_silence_ms": row.vad_silence_ms,
             "reply_language": row.reply_language,
             "llm_model": row.llm_model,
+            "timezone": row.timezone,
         }
     settings.update(_load_local())
     return settings

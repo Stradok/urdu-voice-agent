@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+from datetime import datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from groq import APIStatusError as GroqAPIStatusError, Groq, GroqError
@@ -12,6 +14,19 @@ from .tools import TOOLS_BY_NAME, tool_schemas_for
 
 TOP_K_EXAMPLES = 2
 FALLBACK_REPLY = "معذرت، ابھی مجھے تھوڑی دقت ہو رہی ہے۔ براہ کرم ایک لمحے بعد دوبارہ کوشش کریں۔"
+
+_WEEKDAY_UR = ["پیر", "منگل", "بدھ", "جمعرات", "جمعہ", "ہفتہ", "اتوار"]  # date.weekday(): 0=Mon..6=Sun
+
+
+def _current_date_statement(timezone: str) -> str:
+    """Grounds the model on today's real date/day-of-week, in the business's own timezone -
+    with no such statement anywhere in the prompt, "book me an appointment tomorrow" was
+    being resolved with zero grounding (root cause of a live bug: agreeing to book on a day
+    the clinic is actually closed). Must go through this, never a bare datetime.now() -
+    a server running in UTC (Render, per plan.md) would silently reintroduce the same bug
+    near midnight PKT."""
+    now = datetime.now(ZoneInfo(timezone))
+    return f"آج کی تاریخ: {_WEEKDAY_UR[now.weekday()]}، {now.strftime('%Y-%m-%d')}، وقت {now.strftime('%H:%M')}۔"
 
 # Every entry keyed by the exact string stored in AppSettings.llm_model (see src/models.py).
 # Ordering and notes are from our OWN eval (scripts/eval_llm_models.py, 2026-08-08) against
@@ -150,10 +165,15 @@ class ChatEngine:
         return messages
 
     def reply(self, user_text: str) -> str:
+        # loaded once, up front - re-read per turn (not cached at __init__) so a business
+        # changing settings on the Guardrails page takes effect on the very next message
+        settings = app_settings.load_settings(self.business_id)
+
         faq_context = self.faq_store.get_context(self.business_id, user_text)
 
         system_prompt = persona.build_system_prompt(self.business_id)
         messages = [{"role": "system", "content": system_prompt}] + self._pick_examples(user_text)
+        messages.append({"role": "system", "content": _current_date_statement(settings["timezone"])})
 
         if faq_context:
             messages.append({
@@ -161,7 +181,6 @@ class ChatEngine:
                 "content": f"متعلقہ معلومات: {faq_context}",
             })
 
-        settings = app_settings.load_settings(self.business_id)
         language_instruction = LANGUAGE_MODE_INSTRUCTIONS.get(settings["reply_language"])
         if language_instruction:
             messages.append({"role": "system", "content": language_instruction})
@@ -169,9 +188,6 @@ class ChatEngine:
         messages += self.history[-self.history_turns * 2:]
         messages.append({"role": "user", "content": user_text})
 
-        # re-read per turn (not cached at __init__) so a business switching models on the
-        # Guardrails page takes effect on the next message, without needing to recreate or
-        # invalidate the cached ChatEngine (see api.py's _chat_engines).
         catalog_entry = LLM_CATALOG.get(settings["llm_model"], LLM_CATALOG[DEFAULT_LLM_MODEL])
         client = _get_client(catalog_entry["provider"])
         model = catalog_entry["model"]
@@ -253,9 +269,10 @@ class ChatEngine:
             function = TOOLS_BY_NAME[tool_call.function.name]
             arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
             arguments = arguments or {}
-            # business_id (and, for recommend_human_agent, session_id) are bound here, not
-            # supplied by the model - they're never part of TOOL_SCHEMAS.
-            if tool_call.function.name == "recommend_human_agent":
+            # business_id (and, for recommend_human_agent/book_appointment, session_id, for
+            # traceability back to the conversation) are bound here, not supplied by the
+            # model - they're never part of TOOL_SCHEMAS.
+            if tool_call.function.name in ("recommend_human_agent", "book_appointment"):
                 result = function(self.business_id, self.session_id, **arguments)
             else:
                 result = function(self.business_id, **arguments)

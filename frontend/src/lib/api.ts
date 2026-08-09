@@ -15,6 +15,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (res.status === 401 || res.status === 403) {
     logout();
+    // logout() only clears the stored token - it has no way to reach App.tsx's `business`
+    // state from deep inside a page's fetch call, so without this the app kept showing
+    // whatever page you were on with a now-missing token, silently failing every request
+    // ("missing Authorization header") instead of bouncing back to the login screen.
+    window.dispatchEvent(new Event('sara:auth-expired'));
     throw new AuthError('session expired, please log in again');
   }
   if (!res.ok) {
@@ -107,6 +112,7 @@ export interface Escalation {
   timestamp: string;
   session_id: string | null;
   reason: string;
+  reference_code: string;
 }
 
 export interface WhoAmI {

@@ -12,6 +12,7 @@ Prints the 4 accounts' login credentials at the end.
 """
 import os
 import sys
+from datetime import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -24,6 +25,7 @@ load_dotenv()
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import select
 
+from src import scheduling
 from src.db import get_session
 from src.models import (
     AppSettings, Business, ExampleBankEntry, FaqEntry, PersonaConfig, ServiceItem, StockItem,
@@ -79,12 +81,18 @@ ACCOUNTS = [
                 "naturally and never treat it as unclear or incomplete."
             ),
             "tools_instruction": (
-                "You have a function to check available appointment slots for a specific dental service. "
-                "Only call it when the patient clearly asks about availability for a named service - never "
-                "guess a service they didn't mention. Do not call any function for questions about existing "
-                "appointments, billing, or anything not covered by your available functions - answer from "
-                "'Relevant information' or general knowledge instead. If the patient's message is unclear, "
-                "incomplete, or garbled, never guess-call a function - politely ask them to clarify first."
+                "You have a function to check available appointment slots for a specific dental service, "
+                "and a function to book one. Call check_appointment_slots immediately whenever the patient "
+                "names any service they're interested in - even a broad one like 'cleaning' or 'checkup' - "
+                "do not ask clarifying questions first; the function itself finds the closest matching "
+                "service or tells you if none matches, so let it do that work. Once the patient confirms a "
+                "specific time from the real options shown and gives their name, call book_appointment with "
+                "that exact time - never invent or guess a time that wasn't actually offered. Only skip "
+                "calling check_appointment_slots when the patient's message names no service at all, or is "
+                "genuinely garbled/unintelligible - in that case politely ask them to clarify first. Do not "
+                "call any function for questions about existing appointments, billing, or anything not "
+                "covered by your available functions - answer from 'Relevant information' or general "
+                "knowledge instead."
             ),
             "guardrails": [
                 "Always stay in character as Bright Smile Dental Clinic's assistant. If asked about your "
@@ -115,10 +123,19 @@ ACCOUNTS = [
             ("salam, cleaning k liye kitna charge hai?", "وعلیکم السلام! معذرت، قیمتوں کی تفصیل میرے پاس فی الحال موجود نہیں، براہ کرم کلینک سے تصدیق کروا لیں۔ کیا میں آپ کے لیے صفائی کا اپائنٹمنٹ چیک کر دوں؟"),
         ],
         "services": [
-            ("Teeth Cleaning", 30, ["2026-08-10 10:00", "2026-08-10 14:00", "2026-08-11 11:00"]),
-            ("Root Canal Treatment", 60, ["2026-08-11 09:00", "2026-08-12 15:00"]),
-            ("Teeth Whitening", 45, ["2026-08-10 16:00", "2026-08-13 10:00"]),
-            ("Braces Consultation", 20, ["2026-08-12 09:30", "2026-08-13 14:00"]),
+            ("Teeth Cleaning", 30),
+            ("Root Canal Treatment", 60),
+            ("Teeth Whitening", 45),
+            ("Braces Consultation", 20),
+        ],
+        # Matches the clinic's own seeded FAQ answer ("Monday to Saturday, 10 AM to 8 PM,
+        # closed on Sundays") - previously just unenforced prose, now the real schedule
+        # appointment_slots are generated from (see src/scheduling.py).
+        "hours": [
+            {"weekday": wd, "is_closed": False, "open_time": time(10, 0), "close_time": time(20, 0)}
+            for wd in range(6)  # Monday(0)..Saturday(5)
+        ] + [
+            {"weekday": 6, "is_closed": True, "open_time": None, "close_time": None},  # Sunday
         ],
     },
     {
@@ -359,11 +376,15 @@ def seed_account(account: dict, embedder: SentenceTransformer):
         for (question, answer), embedding in zip(account["faq"], embeddings):
             session.add(FaqEntry(business_id=business.id, question=question, answer=answer, embedding=embedding))
 
-        for name, duration_minutes, slots in account.get("services", []):
-            session.add(ServiceItem(business_id=business.id, name=name, duration_minutes=duration_minutes, available_slots=slots))
+        for name, duration_minutes in account.get("services", []):
+            session.add(ServiceItem(business_id=business.id, name=name, duration_minutes=duration_minutes))
 
         for name, price, quantity in account.get("stock", []):
             session.add(StockItem(business_id=business.id, name=name, price=price, quantity=quantity))
+
+        if "hours" in account:
+            session.flush()  # AppSettings needs a flushed business_id row to attach hours to
+            scheduling.set_business_hours(session, business.id, account["hours"])
 
         print(f"  seeded business '{account['slug']}' -> {business.id}")
 
