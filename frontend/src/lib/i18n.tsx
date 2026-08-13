@@ -17,6 +17,8 @@ const dict = {
   chat_placeholder: { en: 'Type something...', ur: 'کچھ لکھیں...' },
   chat_error_network: { en: 'Sorry, there was a connection problem.', ur: 'معذرت، رابطے میں مسئلہ ہوا۔' },
   chat_error_mic: { en: 'Sorry, there was a problem with the mic.', ur: 'معذرت، مائیک میں مسئلہ ہوا۔' },
+  chat_online: { en: 'Online', ur: 'آن لائن' },
+  chat_typing: { en: 'typing...', ur: 'ٹائپ کر رہی ہے...' },
 
   guardrails_title: { en: 'Guardrails & Persona', ur: 'گارڈریلز اور شخصیت' },
   guardrails_subtitle: {

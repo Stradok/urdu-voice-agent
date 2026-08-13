@@ -2,7 +2,15 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '../lib/utils';
 
-export interface LightBeamButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+// framer-motion's motion.button redefines several native DOM event handler names with its own
+// signatures (drag handlers take PanInfo, animation handlers take AnimationDefinition) -
+// conflicts with the plain ButtonHTMLAttributes versions of the same names, which this
+// component spreads straight onto motion.button below.
+export interface LightBeamButtonProps
+  extends Omit<
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
+    'onDrag' | 'onDragStart' | 'onDragEnd' | 'onAnimationStart' | 'onAnimationEnd' | 'onAnimationIteration'
+  > {
   children: React.ReactNode;
   className?: string;
   gradientColors?: [string, string, string];
