@@ -16,12 +16,12 @@ dotenv.load_dotenv()
 
 from sqlalchemy import select
 
-from src import persona
-from src import settings as app_settings
-from src.db import get_session
-from src.faq_store import FaqStore
-from src.llm import LANGUAGE_MODE_INSTRUCTIONS, LLM_CATALOG, ChatEngine, _get_client
-from src.models import Business
+from src.agent import persona
+from src.agent.faq_store import FaqStore
+from src.agent.llm import LANGUAGE_MODE_INSTRUCTIONS, LLM_CATALOG, ChatEngine, _get_client
+from src.data import settings as app_settings
+from src.data.db import get_session
+from src.data.models import Business
 
 TEST_CASES = [
     ("pain_empathy", "مجھے دانت میں بہت شدید درد ہو رہا ہے، رات بھر سو نہیں سکا"),
@@ -68,6 +68,10 @@ def main():
         client = _get_client(entry["provider"])
         for case_name, user_text in TEST_CASES:
             engine = ChatEngine(faq_store=faq_store, business_id=business_id, business_type="dentist_clinic")
+            # _complete() is called directly below, bypassing reply() - so the per-model
+            # max_tokens (LLM_CATALOG's docstring explains why Gemini 3.5 Flash needs more
+            # than the 300 default) has to be set explicitly here too.
+            engine.max_tokens = entry["max_tokens"]
             messages, language_instruction, temperature = build_messages(engine, user_text)
 
             t0 = time.monotonic()
