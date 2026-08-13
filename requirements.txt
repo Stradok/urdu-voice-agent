@@ -11,3 +11,9 @@ psycopg2-binary
 alembic
 pgvector
 pytest
+livekit-agents>=1.6.9
+livekit-plugins-groq>=1.6.9
+livekit-plugins-azure>=1.6.9
+livekit-plugins-silero>=1.6.9
+livekit-plugins-deepgram>=1.6.9
+livekit-plugins-cartesia>=1.6.9
