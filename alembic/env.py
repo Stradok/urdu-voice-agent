@@ -12,7 +12,7 @@ from alembic import context
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv()
 
-from src.models import Base  # noqa: E402
+from src.data.models import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

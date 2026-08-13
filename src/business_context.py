@@ -14,8 +14,8 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from .db import get_session
-from .models import Business
+from .data.db import get_session
+from .data.models import Business
 
 DEFAULT_BUSINESS_SLUG = os.environ.get("DEFAULT_BUSINESS_SLUG", "default")
 

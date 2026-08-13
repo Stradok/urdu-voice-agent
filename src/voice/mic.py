@@ -5,7 +5,7 @@ import threading
 import wave
 from uuid import UUID
 
-from . import settings as app_settings
+from ..data import settings as app_settings
 from .audio_devices import resolve_capture_device
 
 SAMPLE_RATE = 16000

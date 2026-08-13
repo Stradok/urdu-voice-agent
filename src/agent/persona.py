@@ -2,8 +2,8 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from .db import get_session
-from .models import ExampleBankEntry, PersonaConfig
+from ..data.db import get_session
+from ..data.models import ExampleBankEntry, PersonaConfig
 
 
 def load_persona_config(business_id: UUID) -> dict:
@@ -32,10 +32,22 @@ def save_persona_config(business_id: UUID, config: dict):
         cfg.guardrails = config["guardrails"]
 
 
+# Keyed by business_id, holds the same list object across repeated load_example_bank() calls
+# until a write invalidates it - agent/llm.py's ChatEngine._pick_examples() relies on this to
+# know whether its own cached embeddings of the bank are still valid (compares by identity,
+# `is`, against whatever this function returns), without persona.py needing to know anything
+# about embeddings itself. Previously load_example_bank() queried Postgres and re-embedded the
+# full bank on every single conversational turn, live-uninvestigated overhead independent of
+# any LLM/STT/TTS provider choice - see plan.md's pipeline-overhaul section, 2026-08-10.
+_example_bank_cache: dict[UUID, list[dict]] = {}
+
+
 def load_example_bank(business_id: UUID) -> list[dict]:
-    with get_session() as session:
-        entries = session.scalars(select(ExampleBankEntry).where(ExampleBankEntry.business_id == business_id)).all()
-        return [{"user": e.user_text, "assistant": e.assistant_text} for e in entries]
+    if business_id not in _example_bank_cache:
+        with get_session() as session:
+            entries = session.scalars(select(ExampleBankEntry).where(ExampleBankEntry.business_id == business_id)).all()
+            _example_bank_cache[business_id] = [{"user": e.user_text, "assistant": e.assistant_text} for e in entries]
+    return _example_bank_cache[business_id]
 
 
 def save_example_bank(business_id: UUID, examples: list[dict]):
@@ -43,11 +55,13 @@ def save_example_bank(business_id: UUID, examples: list[dict]):
         session.query(ExampleBankEntry).filter(ExampleBankEntry.business_id == business_id).delete()
         for ex in examples:
             session.add(ExampleBankEntry(business_id=business_id, user_text=ex["user"], assistant_text=ex["assistant"]))
+    _example_bank_cache.pop(business_id, None)
 
 
 def add_example(business_id: UUID, example: dict):
     with get_session() as session:
         session.add(ExampleBankEntry(business_id=business_id, user_text=example["user"], assistant_text=example["assistant"]))
+    _example_bank_cache.pop(business_id, None)
 
 
 def build_system_prompt(business_id: UUID) -> str:
@@ -57,7 +71,7 @@ def build_system_prompt(business_id: UUID) -> str:
 
     sections = [cfg["role_description"], ""]
 
-    sections.append("آپ کے بولنے کا انداز:")
+    sections.append("How you speak:")
     sections.extend(f"- {rule}" for rule in cfg["tone_rules"])
     sections.append("")
 
@@ -68,7 +82,7 @@ def build_system_prompt(business_id: UUID) -> str:
     sections.append(cfg["tools_instruction"])
     sections.append("")
 
-    sections.append("حدود اور احتیاطیں:")
+    sections.append("Boundaries and guardrails:")
     sections.extend(f"- {rule}" for rule in cfg["guardrails"])
 
     return "\n".join(sections)

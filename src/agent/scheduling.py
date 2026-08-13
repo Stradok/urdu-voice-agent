@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from .models import AppointmentSlot, AppSettings, BusinessHours
+from ..data.models import AppointmentSlot, AppSettings, BusinessHours
 
 # All functions here take an already-open `session` and participate in the caller's
 # transaction (same style as src/tools.py's own DB access) - they don't open their own

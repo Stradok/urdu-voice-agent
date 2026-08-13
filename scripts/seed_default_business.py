@@ -21,8 +21,8 @@ load_dotenv()
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import select
 
-from src.db import get_session
-from src.models import (
+from src.data.db import get_session
+from src.data.models import (
     AppSettings,
     Business,
     ExampleBankEntry,

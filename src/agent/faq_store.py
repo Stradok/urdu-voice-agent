@@ -3,8 +3,8 @@ from uuid import UUID
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import select
 
-from .db import get_session
-from .models import FaqEntry
+from ..data.db import get_session
+from ..data.models import FaqEntry
 
 # Similarity below this means "not an FAQ match" -> fall back to free conversation.
 # pgvector's cosine_distance is 1 - cosine_similarity (0 = identical, 2 = opposite) -
@@ -55,4 +55,4 @@ class FaqStore:
         matches = [row for row in rows if row.distance <= MATCH_DISTANCE_THRESHOLD]
         if not matches:
             return None
-        return "\n".join(f"سوال: {m.question} | جواب: {m.answer}" for m in matches)
+        return "\n".join(f"Question: {m.question} | Answer: {m.answer}" for m in matches)

@@ -7,19 +7,19 @@ from uuid import UUID
 from sqlalchemy import select
 
 from . import scheduling
-from .db import get_session
-from .models import Appointment, AppointmentSlot, AppSettings, Booking, MenuItem, ServiceItem, StockItem, TableSlot
-from .reference_codes import create_with_reference_code
+from ..data.db import get_session
+from ..data.models import Appointment, AppointmentSlot, AppSettings, Booking, MenuItem, ServiceItem, StockItem, TableSlot
+from ..data.reference_codes import create_with_reference_code
 
 # Weekday names for slot display - date.weekday() convention (0=Monday..6=Sunday), matching
 # BusinessHours. Digits for day/month rather than Urdu month names, to stay unambiguous
 # when read aloud and easy for the model to copy back verbatim in book_appointment.
-_WEEKDAY_UR = ["پیر", "منگل", "بدھ", "جمعرات", "جمعہ", "ہفتہ", "اتوار"]
+_WEEKDAY_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _SLOT_FORMAT = "%Y-%m-%d %H:%M"
 
 
 def _format_slot(dt: datetime) -> str:
-    label = f"{_WEEKDAY_UR[dt.weekday()]} {dt.day:02d}/{dt.month:02d} {dt.hour:02d}:{dt.minute:02d}"
+    label = f"{_WEEKDAY_EN[dt.weekday()]} {dt.day:02d}/{dt.month:02d} {dt.hour:02d}:{dt.minute:02d}"
     return f"{label} ({dt.strftime(_SLOT_FORMAT)})"
 
 # Cross-language name matching: a business may catalog its products/services in English
@@ -122,27 +122,27 @@ def check_stock(business_id: UUID, product_name: str | None = None) -> str:
 
         if not product_name:
             lines = [
-                f"{p.name} ({p.price} روپے" + (f"، {p.quantity} عدد دستیاب)" if p.quantity > 0 else "، اسٹاک ختم)")
+                f"{p.name} ({p.price} PKR" + (f", {p.quantity} in stock)" if p.quantity > 0 else ", out of stock)")
                 for p in products
             ]
-            return "ہمارے پاس یہ پروڈکٹس دستیاب ہیں: " + "، ".join(lines)
+            return "We have these products available: " + ", ".join(lines)
 
         all_names = [p.name for p in products]
         match_name = _best_match(product_name, all_names)
         if match_name is None:
             closest = _closest_matches(product_name, all_names)
             if not closest:
-                return f"'{product_name}' نامی کوئی پروڈکٹ ہمارے پاس نہیں ملا۔"
-            options = "، ".join(
-                f"{p.name} ({p.price} روپے" + (f"، {p.quantity} عدد دستیاب)" if p.quantity > 0 else "، اسٹاک ختم)")
+                return f"No product named '{product_name}' was found."
+            options = ", ".join(
+                f"{p.name} ({p.price} PKR" + (f", {p.quantity} in stock)" if p.quantity > 0 else ", out of stock)")
                 for p in products if p.name in closest
             )
-            return f"'{product_name}' نامی کوئی پروڈکٹ بالکل اسی نام سے ہمارے پاس نہیں، لیکن یہ ملتے جلتے آپشنز ہیں: {options}۔"
+            return f"No product exactly named '{product_name}' was found, but here are similar options: {options}."
 
         product = next(p for p in products if p.name == match_name)
         if product.quantity <= 0:
-            return f"{product.name} فی الحال اسٹاک میں نہیں ہے۔ قیمت: {product.price} روپے۔"
-        return f"{product.name} دستیاب ہے۔ قیمت: {product.price} روپے، اسٹاک میں {product.quantity} عدد باقی ہیں۔"
+            return f"{product.name} is currently out of stock. Price: {product.price} PKR."
+        return f"{product.name} is available. Price: {product.price} PKR, {product.quantity} left in stock."
 
 
 def _resolve_service(session, business_id: UUID, service_name: str) -> tuple[ServiceItem | None, str | None]:
@@ -156,8 +156,8 @@ def _resolve_service(session, business_id: UUID, service_name: str) -> tuple[Ser
 
     closest = _closest_matches(service_name, all_names)
     if not closest:
-        return None, f"'{service_name}' نامی کوئی سروس ہمارے پاس نہیں ملی۔"
-    return None, f"'{service_name}' نامی بالکل یہ سروس ہمارے پاس نہیں، لیکن یہ ملتی جلتی سروسز دستیاب ہیں: {'، '.join(closest)}۔"
+        return None, f"No service named '{service_name}' was found."
+    return None, f"No service exactly named '{service_name}' was found, but here are similar services available: {', '.join(closest)}."
 
 
 def check_appointment_slots(business_id: UUID, service_name: str) -> str:
@@ -173,11 +173,11 @@ def check_appointment_slots(business_id: UUID, service_name: str) -> str:
             after=scheduling.now_local(settings.timezone), limit=6,
         )
         if not starts:
-            return f"{service.name} کے لیے فی الحال کوئی خالی وقت دستیاب نہیں ہے۔"
-        options = "، ".join(_format_slot(dt) for dt in starts)
+            return f"There are currently no open slots available for {service.name}."
+        options = ", ".join(_format_slot(dt) for dt in starts)
         return (
-            f"{service.name} ({service.duration_minutes} منٹ) کے لیے دستیاب اوقات: {options} — "
-            "بکنگ کرتے وقت قوسین () میں دیا گیا حصہ بالکل ویسے ہی استعمال کریں۔"
+            f"Available times for {service.name} ({service.duration_minutes} min): {options} - "
+            "when booking, use the part inside the parentheses () exactly as given."
         )
 
 
@@ -192,7 +192,7 @@ def book_appointment(
         try:
             requested_start = datetime.strptime(slot_start.strip(), _SLOT_FORMAT)
         except ValueError:
-            return "دیا گیا وقت سمجھ میں نہیں آیا۔ پہلے check_appointment_slots سے دستیاب اوقات دوبارہ چیک کریں اور بالکل وہی فارمیٹ استعمال کریں۔"
+            return "The given time wasn't understood. Re-check available slots via check_appointment_slots first and use that exact format."
 
         settings = session.get(AppSettings, business_id)
         scheduling.ensure_slots_generated(session, business_id)
@@ -224,8 +224,8 @@ def book_appointment(
                 session, business_id, service.duration_minutes, settings.slot_duration_minutes,
                 after=scheduling.now_local(settings.timezone), limit=5,
             )
-            options = "، ".join(_format_slot(dt) for dt in alternatives) or "کوئی وقت دستیاب نہیں"
-            return f"معذرت، یہ وقت اب دستیاب نہیں۔ دستیاب اوقات: {options}"
+            options = ", ".join(_format_slot(dt) for dt in alternatives) or "no times available"
+            return f"Sorry, that time is no longer available. Available times: {options}"
 
         appointment = create_with_reference_code(
             session, Appointment, "appointment",
@@ -238,8 +238,8 @@ def book_appointment(
             row.appointment_id = appointment.id
 
     return (
-        f"اپائنٹمنٹ کنفرم ہو گئی: {customer_name}، {service.name}، {_format_slot(requested_start)}۔ "
-        f"ریفرنس کوڈ: {appointment.reference_code} — یہ کوڈ کسٹمر کو ایک ایک عدد کر کے صاف پڑھ کر سنائیں۔"
+        f"Appointment confirmed: {customer_name}, {service.name}, {_format_slot(requested_start)}. "
+        f"Reference code: {appointment.reference_code} - read this code back to the customer one digit at a time, clearly."
     )
 
 
@@ -253,20 +253,20 @@ def get_menu(business_id: UUID, item_name: str | None = None) -> str:
             if match_name is None:
                 closest = _closest_matches(item_name, all_names)
                 if not closest:
-                    return f"'{item_name}' نامی کوئی ڈش مینو میں نہیں ملی۔"
-                options = "، ".join(f"{i.name} ({i.price} روپے)" for i in items if i.name in closest)
-                return f"'{item_name}' نامی بالکل یہ ڈش مینو میں نہیں، لیکن یہ ملتی جلتی ڈشز دستیاب ہیں: {options}۔"
+                    return f"No dish named '{item_name}' was found on the menu."
+                options = ", ".join(f"{i.name} ({i.price} PKR)" for i in items if i.name in closest)
+                return f"No dish exactly named '{item_name}' was found, but here are similar dishes available: {options}."
             item = next(i for i in items if i.name == match_name)
-            return f"{item.name} - {item.price} روپے۔ {item.description}۔"
+            return f"{item.name} - {item.price} PKR. {item.description}."
 
         today_special = next((i.name for i in items if i.is_today_special), None)
-        lines = [f"{i.name} ({i.price} روپے)" for i in items]
-        prefix = f"آج کی اسپیشل ڈش: {today_special}۔ " if today_special else ""
-        return f"{prefix}مکمل مینو: " + "، ".join(lines)
+        lines = [f"{i.name} ({i.price} PKR)" for i in items]
+        prefix = f"Today's special: {today_special}. " if today_special else ""
+        return f"{prefix}Full menu: " + ", ".join(lines)
 
 
 def recommend_human_agent(business_id: UUID, session_id: UUID, reason: str) -> str:
-    from . import session_log
+    from ..data import session_log
 
     code = session_log.log_escalation(business_id, session_id, reason)
     # Deliberately not a ready-made customer-facing sentence: an earlier version returned
@@ -290,13 +290,13 @@ def book_table(business_id: UUID, date_time: str, party_size: int | str) -> str:
         )
         if slot is None:
             remaining = session.scalars(select(TableSlot.date_time).where(TableSlot.business_id == business_id)).all()
-            available = "، ".join(remaining) or "کوئی وقت دستیاب نہیں"
-            return f"معذرت، {date_time} پر کوئی میز خالی نہیں۔ دستیاب اوقات: {available}"
+            available = ", ".join(remaining) or "no times available"
+            return f"Sorry, no table is free at {date_time}. Available times: {available}"
 
         session.delete(slot)
         session.add(Booking(business_id=business_id, date_time=date_time, party_size=party_size))
 
-    return f"آپ کی میز {date_time} کے لیے {party_size} افراد کے لیے بک ہو گئی ہے۔"
+    return f"Your table for {party_size} people at {date_time} is booked."
 
 
 # Tool functions all take business_id (and recommend_human_agent/book_appointment
@@ -317,11 +317,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "check_stock",
-            "description": "کسی پروڈکٹ کی اسٹاک دستیابی اور قیمت چیک کریں (نئی خریداری سے پہلے)۔ اگر صارف پورا سامان/تمام پروڈکٹس کی فہرست مانگے (مثلاً \"آپ کے پاس کیا کیا ہے\"، \"سب کچھ دکھائیں\") تو product_name خالی چھوڑ دیں — پوری فہرست واپس آئے گی۔ یہ کسی موجودہ آرڈر کی صورتحال یا ڈیلیوری کی معلومات کے لیے نہیں ہے۔",
+            "description": "Check a product's stock availability and price (before a new purchase). If the customer asks for the full inventory/all products (e.g. \"what do you have\", \"show me everything\"), leave product_name empty - the full list will be returned. This is not for existing order status or delivery information.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_name": {"type": "string", "description": "پروڈکٹ کا نام جیسا صارف نے بتایا (پوری فہرست کے لیے خالی چھوڑ دیں)"},
+                    "product_name": {"type": "string", "description": "Product name as the customer said it (leave empty for the full list)"},
                 },
                 "required": [],
             },
@@ -331,11 +331,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "check_appointment_slots",
-            "description": "کسی سروس (مثلاً دانتوں کی صفائی) کے لیے دستیاب اپائنٹمنٹ اوقات چیک کریں۔",
+            "description": "Check available appointment times for a service (e.g. teeth cleaning).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service_name": {"type": "string", "description": "سروس کا نام جیسا صارف نے بتایا"},
+                    "service_name": {"type": "string", "description": "Service name as the customer said it"},
                 },
                 "required": ["service_name"],
             },
@@ -345,16 +345,16 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "book_appointment",
-            "description": "اپائنٹمنٹ کنفرم/بک کریں۔ صرف اسی وقت پر بک کریں جو check_appointment_slots نے واقعی دکھایا ہو - وقت کبھی اندازے سے نہ لکھیں۔",
+            "description": "Confirm/book an appointment. Only book at a time that check_appointment_slots actually showed - never write a guessed time.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service_name": {"type": "string", "description": "سروس کا نام جیسا صارف نے بتایا"},
+                    "service_name": {"type": "string", "description": "Service name as the customer said it"},
                     "slot_start": {
                         "type": "string",
-                        "description": "check_appointment_slots کے نتیجے میں قوسین () کے اندر دیا گیا وقت، بالکل اسی فارمیٹ میں (مثلاً '2026-08-11 10:00')",
+                        "description": "The time given inside the parentheses () from check_appointment_slots' result, in the exact same format (e.g. '2026-08-11 10:00')",
                     },
-                    "customer_name": {"type": "string", "description": "کسٹمر کا نام"},
+                    "customer_name": {"type": "string", "description": "Customer's name"},
                 },
                 "required": ["service_name", "slot_start", "customer_name"],
             },
@@ -364,13 +364,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_menu",
-            "description": "ریسٹورنٹ کا مینو، آج کی اسپیشل ڈش، یا کسی مخصوص ڈش کی قیمت/تفصیل معلوم کریں۔",
+            "description": "Look up the restaurant's menu, today's special dish, or a specific dish's price/details.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "item_name": {
                         "type": "string",
-                        "description": "مخصوص ڈش کا نام (اختیاری - نہ دیا جائے تو پورا مینو واپس ہوگا)",
+                        "description": "Specific dish name (optional - if omitted, the full menu is returned)",
                     },
                 },
                 "required": [],
@@ -381,15 +381,15 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "book_table",
-            "description": "ریسٹورنٹ میں میز بک کریں۔",
+            "description": "Book a table at the restaurant.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "date_time": {
                         "type": "string",
-                        "description": "بکنگ کی تاریخ اور وقت، بالکل اسی فارمیٹ میں جیسا دستیاب اوقات کی فہرست میں دیا گیا ہو (مثلاً '2026-08-05 19:00')",
+                        "description": "Booking date and time, in exactly the same format as given in the available-times list (e.g. '2026-08-05 19:00')",
                     },
-                    "party_size": {"type": "string", "description": "کتنے افراد کے لیے میز چاہیے (عدد کی صورت میں)"},
+                    "party_size": {"type": "string", "description": "How many people the table is for (as a number)"},
                 },
                 "required": ["date_time", "party_size"],
             },
@@ -399,11 +399,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "recommend_human_agent",
-            "description": "جب معاملہ حساس ہو (شدید غصہ، دھمکی، صحت/قانونی/مالی خطرہ) یا آپ خود حل نہ کر سکیں تو یہ فنکشن کال کریں تاکہ ایک حقیقی نمائندہ رابطہ کرے۔",
+            "description": "Call this function when the matter is sensitive (severe anger, threats, health/legal/financial risk) or you can't resolve it yourself, so a real representative can reach out.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reason": {"type": "string", "description": "مختصر وجہ کہ کیوں انسانی نمائندے کی ضرورت ہے"},
+                    "reason": {"type": "string", "description": "Brief reason why a human representative is needed"},
                 },
                 "required": ["reason"],
             },

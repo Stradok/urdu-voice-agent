@@ -8,8 +8,8 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from src.db import get_session
-from src.models import Business, Escalation, Exchange, FaqEntry, Session, StockItem
+from src.data.db import get_session
+from src.data.models import Business, Escalation, Exchange, FaqEntry, Session, StockItem
 
 
 @pytest.fixture

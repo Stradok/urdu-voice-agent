@@ -6,7 +6,7 @@ from xml.sax.saxutils import escape
 
 import azure.cognitiveservices.speech as speechsdk
 
-from . import settings as app_settings
+from ..data import settings as app_settings
 from .audio_devices import resolve_playback_device
 
 VOICE = "ur-PK-UzmaNeural"  # Urdu (Pakistan) female neural voice; ur-PK-AsadNeural is the male alternative

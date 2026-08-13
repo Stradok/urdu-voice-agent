@@ -11,16 +11,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from . import persona, session_log
-from . import settings as app_settings
-from .audio_devices import list_capture_devices, list_playback_devices
+from .agent import persona
+from .agent.faq_store import FaqStore
+from .agent.llm import LLM_CATALOG, ChatEngine
 from .auth import get_current_business
 from .business_context import BusinessContext
-from .db import get_session
-from .faq_store import FaqStore
-from .llm import LLM_CATALOG, ChatEngine
-from .models import MenuItem, ServiceItem, StockItem, TableSlot
-from .models import FaqEntry as FaqEntryRow
+from .data import session_log
+from .data import settings as app_settings
+from .data.db import get_session
+from .data.models import MenuItem, ServiceItem, StockItem, TableSlot
+from .data.models import FaqEntry as FaqEntryRow
+from .voice.audio_devices import list_capture_devices, list_playback_devices
 
 app = FastAPI(title="Urdu Voice Agent API")
 app.add_middleware(
@@ -57,7 +58,7 @@ _speaker = None
 def _get_transcriber():
     global _transcriber
     if _transcriber is None:
-        from .stt import Transcriber
+        from .voice.stt import Transcriber
 
         _transcriber = Transcriber()
     return _transcriber
@@ -66,7 +67,7 @@ def _get_transcriber():
 def _get_speaker():
     global _speaker
     if _speaker is None:
-        from .tts import Speaker
+        from .voice.tts import Speaker
 
         _speaker = Speaker()
     return _speaker
@@ -96,7 +97,7 @@ def chat(payload: ChatMessage, business: BusinessContext = Depends(get_current_b
 def voice_turn_start(business: BusinessContext = Depends(get_current_business)):
     """Begin recording from the local mic - called on mic-button press-down (hold-to-talk),
     stopped explicitly by /voice_turn/stop on release rather than guessed via VAD silence."""
-    from .mic import start_recording
+    from .voice.mic import start_recording
 
     try:
         start_recording(business.id)
@@ -109,7 +110,7 @@ def voice_turn_start(business: BusinessContext = Depends(get_current_business)):
 def voice_turn_stop(business: BusinessContext = Depends(get_current_business)):
     """Stop the in-progress recording, transcribe, reply, and speak the reply out loud
     through the local speakers - called on mic-button release."""
-    from .mic import stop_recording
+    from .voice.mic import stop_recording
 
     t0 = time.monotonic()
     try:

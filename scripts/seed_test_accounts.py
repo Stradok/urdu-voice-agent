@@ -25,9 +25,9 @@ load_dotenv()
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import select
 
-from src import scheduling
-from src.db import get_session
-from src.models import (
+from src.agent import scheduling
+from src.data.db import get_session
+from src.data.models import (
     AppSettings, Business, ExampleBankEntry, FaqEntry, PersonaConfig, ServiceItem, StockItem,
 )
 

@@ -24,9 +24,9 @@ load_dotenv()
 
 from sqlalchemy import select
 
-from src.db import get_session
-from src.models import AppSettings, Business
-from src.tools import BUSINESS_TYPE_TOOLS
+from src.agent.tools import BUSINESS_TYPE_TOOLS
+from src.data.db import get_session
+from src.data.models import AppSettings, Business
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]

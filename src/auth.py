@@ -16,8 +16,8 @@ from fastapi import Header, HTTPException
 from sqlalchemy import select
 
 from .business_context import BusinessContext
-from .db import get_session
-from .models import Business
+from .data.db import get_session
+from .data.models import Business
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_PUBLISHABLE_KEY = os.environ["SUPABASE_PUBLISHABLE_KEY"]

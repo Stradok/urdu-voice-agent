@@ -4,10 +4,10 @@ import sys
 
 from dotenv import load_dotenv
 
+from src.agent.faq_store import FaqStore
+from src.agent.llm import ChatEngine
 from src.business_context import get_default_business
-from src.faq_store import FaqStore
-from src.llm import ChatEngine
-from src.settings import load_settings
+from src.data.settings import load_settings
 
 load_dotenv()
 
@@ -50,9 +50,9 @@ def run_text_mode():
 
 
 def run_voice_mode():
-    from src.mic import start_recording, stop_recording
-    from src.stt import Transcriber
-    from src.tts import Speaker
+    from src.voice.mic import start_recording, stop_recording
+    from src.voice.stt import Transcriber
+    from src.voice.tts import Speaker
 
     check_required_keys(["GROQ_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"])
     business = get_default_business()
