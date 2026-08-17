@@ -6,6 +6,17 @@ const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const VENV_PYTHON = path.join(PROJECT_ROOT, '.venv', 'bin', 'python');
 const isDev = !app.isPackaged;
 
+// Electron's Linux sandbox needs chrome-sandbox owned by root with mode 4755, which a plain
+// `npm run app:dev` checkout won't have (no installer ran to set that up) - Electron aborts
+// on startup rather than silently running unsandboxed. The fix has to be the --no-sandbox
+// flag on the electron CLI invocation itself (see package.json's app:dev script) - the
+// native sandbox check happens before any of this file's JS runs, so setting it
+// programmatically here via app.commandLine.appendSwitch (tried first) is too late and has
+// no effect. Dev-only concern: this window only ever loads our own local Vite server, never
+// arbitrary/untrusted content, so running unsandboxed here carries none of the risk it would
+// for a browser. A packaged build's installer sets the binary's permissions correctly, so
+// production doesn't need this.
+
 
 let pythonProcess = null;
 let mainWindow = null;

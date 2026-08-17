@@ -4,7 +4,6 @@ import { api, type WhoAmI } from './lib/api';
 import { getToken, logout } from './lib/auth';
 import { useLanguage } from './lib/i18n';
 import LoadingScreen from './components/LoadingScreen';
-import SplashScreen from './components/SplashScreen';
 import MagnificationDock, { type DockItemData } from './components/MagnificationDock';
 import LanguageToggle from './components/LanguageToggle';
 import LoginPage from './pages/LoginPage';
@@ -18,7 +17,6 @@ type Page = 'chat' | 'guardrails' | 'store' | 'faq' | 'learning';
 
 export default function App() {
   const [backendReady, setBackendReady] = useState(false);
-  const [showSplash, setShowSplash] = useState(true);
   const [page, setPage] = useState<Page>('chat');
   const [business, setBusiness] = useState<WhoAmI | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -67,10 +65,6 @@ export default function App() {
 
   if (!backendReady || checkingAuth) {
     return <LoadingScreen label={t('loading_label')} />;
-  }
-
-  if (showSplash) {
-    return <SplashScreen onDone={() => setShowSplash(false)} />;
   }
 
   if (!business) {

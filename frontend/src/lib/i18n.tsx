@@ -9,8 +9,6 @@ const dict = {
   nav_faq: { en: 'FAQ', ur: 'FAQ' },
   nav_learning: { en: 'Learning', ur: 'سیکھنا' },
 
-  splash_tagline: { en: 'Your Urdu customer support assistant', ur: 'آپ کا اردو کسٹمر سپورٹ اسسٹنٹ' },
-  splash_start: { en: 'Get Started', ur: 'شروع کریں' },
   loading_label: { en: 'Getting Sara ready...', ur: 'سارہ کو تیار ہونے دیں...' },
 
   chat_empty: { en: 'Type a message or use the mic to talk to Sara', ur: 'سارہ سے بات کرنے کے لیے کچھ لکھیں یا مائیک استعمال کریں' },
