@@ -72,9 +72,10 @@ class AppSettings(Base):
     tts_rate_percent: Mapped[int] = mapped_column(nullable=False, default=15)
     vad_silence_ms: Mapped[int] = mapped_column(nullable=False, default=700)
     reply_language: Mapped[str] = mapped_column(String, nullable=False, default="auto")
-    # key into src/llm.py's LLM_CATALOG - which provider+model this business's ChatEngine
-    # uses, selectable per-business (see the LLM model dropdown on the Guardrails page).
-    llm_model: Mapped[str] = mapped_column(String, nullable=False, default="openrouter:google/gemma-4-31b-it")
+    # key into src/agent/llm.py's LLM_CATALOG - which provider+model this business's ChatEngine
+    # uses, selectable per-business (see the LLM model dropdown on the Guardrails page). Keep
+    # this in step with that module's DEFAULT_LLM_MODEL, which documents why it's Groq today.
+    llm_model: Mapped[str] = mapped_column(String, nullable=False, default="groq:openai/gpt-oss-120b")
     # appointment-scheduling settings (src/scheduling.py) - the grid granularity slots are
     # generated at, the IANA timezone all "today"/"tomorrow" reasoning is anchored to (never
     # bare server-local time - see the Sunday-booking bug this was added to fix), and a

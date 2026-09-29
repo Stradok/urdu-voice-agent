@@ -31,11 +31,19 @@ from src.data.models import (
     AppSettings, Business, ExampleBankEntry, FaqEntry, PersonaConfig, ServiceItem, StockItem,
 )
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY")
 
 
 def create_auth_user(email: str, password: str):
+    """No-op when Supabase isn't configured (local development against Docker Postgres - see
+    src/auth.py's LOCAL_AUTH_MODE). The business rows below are what the app actually reads;
+    the Supabase Auth user only exists to issue login tokens, and local mode doesn't use
+    tokens at all, so skipping this leaves the seed otherwise complete rather than failing."""
+    if not SUPABASE_URL:
+        print(f"  (local mode: skipping Supabase Auth user for {email})")
+        return
+
     response = httpx.post(
         f"{SUPABASE_URL}/auth/v1/admin/users",
         headers={"apikey": SUPABASE_SECRET_KEY, "Authorization": f"Bearer {SUPABASE_SECRET_KEY}"},
@@ -82,14 +90,20 @@ ACCOUNTS = [
             ),
             "tools_instruction": (
                 "You have a function to check available appointment slots for a specific dental service, "
-                "and a function to book one. Call check_appointment_slots immediately whenever the patient "
-                "names any service they're interested in - even a broad one like 'cleaning' or 'checkup' - "
-                "do not ask clarifying questions first; the function itself finds the closest matching "
-                "service or tells you if none matches, so let it do that work. Once the patient confirms a "
+                "and a function to book one. Call check_appointment_slots only once the patient has clearly "
+                "and directly asked to book, schedule, or check available times for a service - even a "
+                "broadly-named one like 'cleaning' or 'checkup' is fine, but it must be an actual request, "
+                "not just a service mentioned in passing, in a question about something else, or while "
+                "thinking aloud. If they have not yet clearly asked for an appointment, just respond "
+                "normally and wait - do not call the function speculatively. Do NOT call it just because a "
+                "service name appears somewhere earlier in the conversation history - only the patient's "
+                "current message decides this. Do NOT call it if the patient is declining, saying no, or "
+                "expressing they do NOT want a service (e.g. 'I don't want cleaning', 'not interested', "
+                "'no thanks') - acknowledge the decline instead and ask what they'd like instead. Do NOT "
+                "call it for a greeting, a bare acknowledgement ('okay', 'right', 'what?'), or anything "
+                "that isn't an actual request to book or check availability. Once the patient confirms a "
                 "specific time from the real options shown and gives their name, call book_appointment with "
-                "that exact time - never invent or guess a time that wasn't actually offered. Only skip "
-                "calling check_appointment_slots when the patient's message names no service at all, or is "
-                "genuinely garbled/unintelligible - in that case politely ask them to clarify first. Do not "
+                "that exact time - never invent or guess a time that wasn't actually offered. Do not "
                 "call any function for questions about existing appointments, billing, or anything not "
                 "covered by your available functions - answer from 'Relevant information' or general "
                 "knowledge instead."
@@ -169,7 +183,9 @@ ACCOUNTS = [
                 "everything you sell, call it with no product name to get the full list. Only call it when "
                 "they clearly ask about a specific product or the full range - never guess a product they "
                 "didn't mention, and never call it for order status, delivery, or return questions (answer "
-                "those from 'Relevant information' instead). If their message is unclear or garbled, ask "
+                "those from 'Relevant information' instead). Do NOT call it if the customer is declining or "
+                "saying they do NOT want a product they just mentioned (e.g. 'I don't want that one', 'not "
+                "interested') - acknowledge the decline instead. If their message is unclear or garbled, ask "
                 "them to clarify instead of guessing."
             ),
             "guardrails": [
@@ -236,8 +252,10 @@ ACCOUNTS = [
                 "everything available, call it with no product name to get the full list. Only call it when "
                 "they clearly ask about a specific item or the full range - never guess an item they didn't "
                 "mention, and never call it for order status or delivery questions (answer those from "
-                "'Relevant information' instead). If their message is unclear or garbled, ask them to "
-                "clarify instead of guessing."
+                "'Relevant information' instead). Do NOT call it if the customer is declining or saying "
+                "they do NOT want an item they just mentioned (e.g. 'I don't want that one', 'not "
+                "interested') - acknowledge the decline instead. If their message is unclear or garbled, ask "
+                "them to clarify instead of guessing."
             ),
             "guardrails": [
                 "Always stay in character as Thread House's assistant. If asked whether you're an AI, "

@@ -76,9 +76,21 @@ LLM_CATALOG = {
         "provider": "openrouter", "model": "deepseek/deepseek-v4-flash", "max_tokens": 300,
         "label": "DeepSeek V4 Flash", "note": "Correct in our tests but noticeably slower (3-15s) on tool calls",
     },
-    "groq:llama-3.3-70b-versatile": {
-        "provider": "groq", "model": "llama-3.3-70b-versatile", "max_tokens": 300,
-        "label": "Groq Llama 3.3 70B (original default)", "note": "Fastest inference, known Urdu script-corruption defect",
+    # llama-3.3-70b-versatile no longer exists on Groq as of this check (2026-08, confirmed via
+    # client.models.list() - a straight 404, not a config issue) - Groq's own lineup moved on.
+    # Any business still configured with the old "groq:llama-3.3-70b-versatile" key falls back
+    # to DEFAULT_LLM_MODEL below (LLM_CATALOG.get()'s existing fallback), not a crash - but
+    # should be pointed at this new entry once Supabase is back up and that's checkable.
+    # gpt-oss-120b needs a much higher max_tokens than the other entries here - it's a
+    # reasoning-style model that spends part of its budget thinking before answering; 300
+    # (this catalog's usual default) produced a silently empty reply in testing, 500 didn't.
+    # Verified live (2026-08-13): correct tool_calls with the project's real schemas, and
+    # correct natural Urdu-English code-switched replies under the updated auto language
+    # instruction below - both untested with the model it's replacing (Groq deprecated it
+    # before that verification could happen).
+    "groq:openai/gpt-oss-120b": {
+        "provider": "groq", "model": "openai/gpt-oss-120b", "max_tokens": 500,
+        "label": "GPT-OSS 120B (Groq)", "note": "Fast Groq inference, verified correct tool-calling and natural Urdu-English code-switching",
     },
     "openrouter:google/gemini-3.5-flash": {
         "provider": "openrouter", "model": "google/gemini-3.5-flash", "max_tokens": 600,
@@ -99,7 +111,13 @@ LLM_CATALOG = {
         ),
     },
 }
-DEFAULT_LLM_MODEL = "openrouter:google/gemini-3.5-flash"
+# Groq rather than OpenRouter as of 2026-08: the OpenRouter account's remaining credit is too
+# small for this project's real prompt size (~1500 tokens of persona + FAQ context + tool
+# schemas) - it 402s on every actual turn while still succeeding on trivial test prompts, which
+# makes the failure easy to misdiagnose. Groq's free tier serves the full prompt fine. Gemini
+# 3.5 Flash still has the best measured Urdu accuracy of anything evaluated (91.72% UrduMMLU)
+# and remains in the catalog above - switch back to it whenever OpenRouter has real credit.
+DEFAULT_LLM_MODEL = "groq:openai/gpt-oss-120b"
 
 _provider_clients: dict[str, object] = {}
 
@@ -153,15 +171,28 @@ def _get_client(provider: str, model: str | None = None):
 # a different reply-language mode. Placed as the last system message (closest to the user's
 # message) so it takes priority over the earlier, more general persona guardrails.
 LANGUAGE_MODE_INSTRUCTIONS = {
+    # Real Pakistani customers routinely code-switch mid-sentence ("sir mujhe ek appointment
+    # chahiye for tomorrow", "kya aap k pass yeh item available hai") - an earlier version of
+    # this instruction treated Urdu-script/Roman-Urdu/English as three mutually exclusive
+    # buckets ("recognize them separately, don't conflate them"), which forces the model to
+    # normalize genuinely mixed input into one pure language instead of replying in the same
+    # natural mix the customer actually used. Mixing is now its own case (3), not an edge case
+    # of the other two.
     "auto": (
-        "Language rule: there are three possible cases for the language of the customer's message - "
-        "recognize them separately, don't conflate them: "
-        "(1) If the customer writes in Urdu script (e.g. 'کیا حال ہے'), reply in Urdu script. "
-        "(2) If the customer writes in Roman Urdu - meaning the Urdu language, but spelled in English "
-        "letters (e.g. 'kya hal hai', 'mujha kapre kharedna hn') - reply in Roman Urdu too. Do not treat "
-        "this as English and reply in English, and do not convert it into Urdu script either. "
-        "(3) If the customer genuinely writes in English (e.g. 'do you have earbuds?'), reply fully in "
-        "fluent English. "
+        "Language rule: match how the customer is actually writing - including when they mix "
+        "Urdu and English within the same message, which is completely normal in Pakistani "
+        "customer speech and should be mirrored, not corrected into one pure language. Cases: "
+        "(1) Customer writes in Urdu script (e.g. 'کیا حال ہے') - reply in Urdu script; mix in "
+        "English words only if the customer's own message did. "
+        "(2) Customer writes in Roman Urdu with no real English mixed in (Urdu language, spelled "
+        "in English letters, e.g. 'kya hal hai', 'mujha kapre kharedna hn') - reply in Roman "
+        "Urdu. Never convert this to Urdu script or reply fully in English. "
+        "(3) Customer code-switches - genuinely mixes Urdu/Roman Urdu and English within one "
+        "message (e.g. 'sir mujhe ek appointment chahiye for tomorrow', 'kya aap k pass yeh item "
+        "available hai') - reply the same natural mixed way. Do not force this into pure Urdu or "
+        "pure English - a mixed question gets a mixed answer. "
+        "(4) Customer writes in genuinely pure English with no Urdu at all (e.g. 'do you have "
+        "earbuds?') - reply fully in fluent English. "
         "This instruction overrides the 'always write only in Urdu' restriction given above."
     ),
     "english": (
